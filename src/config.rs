@@ -129,6 +129,11 @@ pub struct TrackedRepo {
     pub installed_version: Option<String>,
     /// Whether the app ID is currently installed (refreshed on every check).
     pub app_present: bool,
+    /// Where flatpak says the installed app came from ("<name>-origin" for a bundle file,
+    /// "flathub", ...).
+    pub installed_origin: String,
+    /// An installed app whose name matches but that wasn't linked automatically.
+    pub suggested_app_id: Option<String>,
     pub latest: Option<Release>,
     pub last_checked: Option<String>,
     pub last_error: Option<String>,
@@ -176,6 +181,12 @@ impl TrackedRepo {
     pub fn latest_asset(&self) -> Option<&gh::Asset> {
         self.latest.as_ref()?.pick_asset(&self.asset_pattern)
     }
+    /// Linked to an app that came from a remote like Flathub: updating replaces it with the
+    /// GitHub build.
+    pub fn installed_from_remote(&self) -> bool {
+        self.app_present && !self.installed_origin.is_empty() && !self.installed_origin.ends_with("-origin")
+    }
+
     pub fn is_installed(&self) -> bool {
         if self.app_id.is_empty() { self.installed_tag.is_some() } else { self.app_present }
     }

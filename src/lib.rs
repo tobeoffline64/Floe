@@ -2,6 +2,7 @@
 //! version logic. Everything here is UI-independent and blocking (the app calls it from
 //! worker threads).
 pub mod config;
+pub mod console;
 pub mod flatpak;
 pub mod gh;
 pub mod host;

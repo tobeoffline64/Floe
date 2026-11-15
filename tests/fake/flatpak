@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
-# Fake flatpak for tests. Installed app version in $FAKE_DIR/installed (absent = not installed).
+# Fake flatpak for tests. Installed version of io.github.o.Demo in $FAKE_DIR/installed
+# (absent = not installed). $FAKE_DIR/extra_apps: more `flatpak list` lines (tab-separated).
+# $FAKE_DIR/slow: install prints progress for that many seconds.
 echo "flatpak $*" >> "$FAKE_DIR/calls"
 case "$1" in
   --version) echo "Flatpak 1.16.0";;
-  list) [[ "$*" == *--user* && -f "$FAKE_DIR/installed" ]] && echo "io.github.o.Demo"; true;;
-  info) [[ "$*" == *--user* && -f "$FAKE_DIR/installed" ]] || { echo "error: io.github.o.Demo not installed" >&2; exit 1; }
+  list)
+    if [[ "$*" == *--user* ]]; then
+      [[ -f "$FAKE_DIR/installed" ]] && printf 'io.github.o.Demo\tDemo\t%s\tdemo-origin\n' "$(cat "$FAKE_DIR/installed")"
+      [[ -f "$FAKE_DIR/extra_apps" ]] && cat "$FAKE_DIR/extra_apps"
+    fi; true;;
+  info) [[ "$*" == *--user* && -f "$FAKE_DIR/installed" ]] || { echo "error: not installed" >&2; exit 1; }
         printf '\nDemo\n\n     ID: io.github.o.Demo\n Version: %s\n' "$(cat "$FAKE_DIR/installed")";;
-  install) f="${@: -1}"; [[ -f "$f" ]] || { echo "error: no file" >&2; exit 1; }
-           cat "$FAKE_DIR/tag" 2>/dev/null | sed 's/^v//' > "$FAKE_DIR/installed" || echo 1.1.0 > "$FAKE_DIR/installed"
-           [[ -s "$FAKE_DIR/installed" ]] || echo 1.1.0 > "$FAKE_DIR/installed"
-           echo "Installing app/io.github.o.Demo/x86_64/master";;
+  install)
+    f="${@: -1}"; [[ -f "$f" ]] || { echo "error: no file" >&2; exit 1; }
+    echo "Required runtime for io.github.o.Demo/x86_64/master (runtime/org.gnome.Platform/x86_64/49) found in remote flathub"
+    n=$(cat "$FAKE_DIR/slow" 2>/dev/null || echo 0)
+    for ((i=1; i<=n*2; i++)); do printf 'Installing 1/2… %d%%\r' $((i*50/n)); sleep 0.5; done
+    echo
+    sed 's/^v//' "$FAKE_DIR/tag" > "$FAKE_DIR/installed"
+    echo "Installing app/io.github.o.Demo/x86_64/master";;
   run) ;;
 esac

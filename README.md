@@ -25,6 +25,18 @@ Built in **Rust** with **[Dioxus](https://dioxuslabs.com) desktop** and the
 - **Versions**: the installed version comes from `flatpak info` (so updates done outside Floe
   are noticed). The app ID is detected automatically after the first install if you don't
   enter it.
+- **Live console** while downloading and installing: the `gh` and `flatpak` output as it
+  arrives (progress bars redraw in place), a download progress bar, **Cancel** (stops the
+  running command) and **Copy output**. When flatpak is quiet for a while, Floe explains
+  why. The first install of an app also downloads its runtime, often several hundred MB.
+- **Already installed?** When you add a repository, Floe looks through `flatpak list` and
+  links an installed app with the ID `io.github.<owner>.<Name>`, or a bundle installed from a
+  file with the same name, so it shows the installed version instead of reinstalling. An app
+  from Flathub that only has a similar name is suggested (**Link**) but never linked
+  automatically, because updating it from GitHub would replace the Flathub build.
+- **Installed** page: every flatpak on this computer, which repository it belongs to,
+  **Link** for suggested matches and **Track** for untracked GitHub-style IDs
+  (`io.github.owner.Name` → `owner/Name`).
 - Release notes, **Open app**, **Reinstall**, link to the release on GitHub.
 - **Activity** page with the full `gh` / `flatpak` output of everything Floe did.
 - **Settings**: `gh` and flatpak status, install for the user (`--user`, default) or system-wide
@@ -114,12 +126,13 @@ Same as PenguinFin: bump `version` in `Cargo.toml` (and `flatpak/*.metainfo.xml`
 | --- | --- |
 | `src/config.rs` | Tracked repositories, settings, update status logic, JSON storage, export/import |
 | `src/gh.rs` | `gh` wrapper: latest release, asset matching, download, login status |
-| `src/flatpak.rs` | `flatpak` wrapper: install bundle, installed version, app ID detection, launch |
-| `src/host.rs` | Runs host programs (via `flatpak-spawn --host` when sandboxed) |
-| `src/updater.rs` | Check / download / install steps |
+| `src/flatpak.rs` | `flatpak` wrapper: install bundle, installed apps and matching, app ID detection, launch |
+| `src/host.rs` | Runs host programs (via `flatpak-spawn --host` when sandboxed), streaming output |
+| `src/updater.rs` | Check / download / install steps, linking installed apps |
+| `src/console.rs` | Live output and cancellation of running jobs |
 | `src/version.rs` | Version and tag comparison |
 | `src/app.rs` | App shell, sidebar, state and background actions |
-| `src/views/` | Apps, Activity and Settings pages |
+| `src/views/` | Apps, Installed, Activity and Settings pages |
 | `src/ui/` | Rust/UI components (MIT; see `LICENSE-rust-ui`), shared with PenguinFin |
 | `style/app.css` | Tailwind source with the PenguinFin theme tokens; compiled to `assets/app.css` |
 | `flatpak/` | Manifest, desktop file, AppStream metadata, icon |

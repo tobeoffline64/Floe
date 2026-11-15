@@ -6,6 +6,7 @@ pub mod button;
 pub mod card;
 pub mod input;
 pub mod label;
+pub mod progress;
 pub mod separator;
 pub mod skeleton;
 pub mod switch;

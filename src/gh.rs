@@ -1,7 +1,10 @@
 //! GitHub releases through the GitHub CLI (`gh`). Using `gh` means private repositories
 //! and your existing `gh auth login` just work, and Floe never handles a token itself.
 
+use crate::console::Handle;
 use crate::host;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -202,14 +205,75 @@ fn glob_escape(name: &str) -> String {
         .collect()
 }
 
-/// Download one release asset into `dir` and return the file's path.
-pub fn download(repo: &str, tag: &str, asset: &str, dir: &Path) -> Result<PathBuf, String> {
+/// Download one release asset into `dir` and return the file's path. Output goes to `job`'s
+/// console, with the bytes downloaded so far as progress (`size` is the asset's size).
+pub fn download(repo: &str, tag: &str, asset: &str, size: u64, dir: &Path, job: &Handle) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+    let path = dir.join(asset);
+    let _ = std::fs::remove_file(&path);
     let dir_s = dir.to_string_lossy().into_owned();
     let pattern = glob_escape(asset);
-    gh(&["release", "download", tag, "--repo", repo, "--pattern", &pattern, "--dir", &dir_s, "--clobber"])?;
-    let path = dir.join(asset);
-    if path.is_file() { Ok(path) } else { Err(format!("gh finished but {} is missing", path.display())) }
+
+    // gh prints nothing while it downloads without a terminal, so watch the files it writes.
+    let existing: Vec<PathBuf> = list_files(dir);
+    let done = Arc::new(AtomicBool::new(false));
+    let watcher = {
+        let (done, dir, job) = (done.clone(), dir.to_path_buf(), job.clone());
+        std::thread::spawn(move || {
+            while !done.load(Ordering::Relaxed) {
+                let bytes: u64 = list_files(&dir)
+                    .iter()
+                    .filter(|p| !existing.contains(p))
+                    .filter_map(|p| p.metadata().ok())
+                    .map(|m| m.len())
+                    .sum();
+                job.progress(Some((bytes, size)));
+                std::thread::sleep(std::time::Duration::from_millis(400));
+            }
+        })
+    };
+    job.line(format!("Downloading {asset} ({}) from {repo} {tag}", human_size(size)));
+    let result = host::run_streaming(
+        "gh",
+        &["release", "download", tag, "--repo", repo, "--pattern", &pattern, "--dir", &dir_s, "--clobber"],
+        job,
+    );
+    done.store(true, Ordering::Relaxed);
+    let _ = watcher.join();
+    job.progress(None);
+    let out = match result {
+        Ok(o) => o,
+        Err(e) => {
+            let _ = std::fs::remove_file(&path);
+            return Err(e);
+        }
+    };
+    if !out.ok {
+        return Err(friendly_error(&out));
+    }
+    if path.is_file() {
+        job.line(format!("Saved {}", path.display()));
+        Ok(path)
+    } else {
+        Err(format!("gh finished but {} is missing", path.display()))
+    }
+}
+
+fn list_files(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir).map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.is_file()).collect()).unwrap_or_default()
+}
+
+pub fn human_size(bytes: u64) -> String {
+    let b = bytes as f64;
+    if b >= 1e9 {
+        format!("{:.1} GB", b / 1e9)
+    } else if b >= 1e6 {
+        format!("{:.1} MB", b / 1e6)
+    } else if b >= 1e3 {
+        format!("{:.0} kB", b / 1e3)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 #[cfg(test)]

@@ -8,7 +8,8 @@ use crate::widgets::*;
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use floe::config::{Status, TrackedRepo};
-use floe::gh;
+use floe::{console, gh};
+use floe::flatpak::Scope;
 
 #[component]
 pub fn AppsPage(on_settings: EventHandler<()>) -> Element {
@@ -186,6 +187,11 @@ fn RepoCard(id: u64) -> Element {
     let mut notes = use_signal(|| false);
     let mut editing = use_signal(|| false);
     let mut confirm_remove = use_signal(|| false);
+    // None = automatic: open while downloading/installing.
+    let mut console_open = use_signal(|| None::<bool>);
+    let has_console = console::generation(id).is_some();
+    let installing = matches!(busy, Some(Busy::Downloading | Busy::Installing));
+    let show_console = console_open().unwrap_or(installing);
 
     let initials: String = r.name().chars().filter(|c| c.is_alphanumeric()).take(2).collect::<String>().to_uppercase();
     let latest = r.latest.clone();
@@ -260,6 +266,29 @@ fn RepoCard(id: u64) -> Element {
                     }
                 }
 
+                if let (Some(sug), true) = (&r.suggested_app_id, r.app_id.is_empty()) {
+                    div { class: "flex flex-wrap items-center gap-2 rounded-md bg-info-light px-3 py-2 text-xs text-info-dark",
+                        Icon { name: IconName::Link, class: "size-3.5 shrink-0" }
+                        span { class: "min-w-0 flex-1",
+                            "{sug} is installed and may be this app. Link it to track its version (updating would replace it with this repository's build)." }
+                        Button { size: ButtonSize::Sm, variant: ButtonVariant::Outline,
+                            onclick: {
+                                let sug = sug.clone();
+                                move |_| {
+                                    let sug = sug.clone();
+                                    store.update(|c| if let Some(r) = c.repo_mut(id) { r.app_id = sug; r.suggested_app_id = None; });
+                                    spawn_forever(app::check_repo(store, id));
+                                }
+                            },
+                            "Link" }
+                    }
+                }
+
+                if r.installed_from_remote() {
+                    p { class: "text-xs text-warning-dark",
+                        "Installed from \"{r.installed_origin}\" (not from a GitHub bundle). Updating here replaces it with the GitHub release build; your app data is kept." }
+                }
+
                 if let Some(e) = &r.last_error {
                     div { class: "flex items-start gap-2 rounded-md bg-destructive-light px-3 py-2 text-xs text-destructive-dark",
                         Icon { name: IconName::Alert, class: "mt-0.5 size-3.5 shrink-0" }
@@ -277,6 +306,16 @@ fn RepoCard(id: u64) -> Element {
                     Button { size: ButtonSize::Sm, variant: ButtonVariant::Outline, disabled: busy.is_some(),
                         onclick: move |_| { spawn_forever(app::check_repo(store, id)); },
                         Icon { name: IconName::Refresh } "Check"
+                    }
+                    if installing {
+                        Button { size: ButtonSize::Sm, variant: ButtonVariant::Destructive, title: "Stop the download or install",
+                            onclick: move |_| console::cancel(id),
+                            Icon { name: IconName::Stop } "Cancel" }
+                    }
+                    if has_console {
+                        Button { size: ButtonSize::Sm, variant: ButtonVariant::Ghost,
+                            onclick: move |_| console_open.set(Some(!show_console)),
+                            Icon { name: IconName::Terminal } if show_console { "Hide console" } else { "Console" } }
                     }
                     if has_app {
                         Button { size: ButtonSize::Sm, variant: ButtonVariant::Outline,
@@ -336,6 +375,10 @@ fn RepoCard(id: u64) -> Element {
                             pre { class: "whitespace-pre-wrap break-words font-sans text-sm text-foreground", "{l.body.trim()}" }
                         }
                     }
+                }
+
+                if show_console && has_console {
+                    ConsolePanel { id, busy }
                 }
 
                 if editing() {
@@ -408,6 +451,77 @@ fn EditRepo(repo: TrackedRepo, on_done: EventHandler<()>) -> Element {
             div { class: "flex gap-2",
                 Button { size: ButtonSize::Sm, onclick: save, Icon { name: IconName::Check } "Save" }
                 Button { size: ButtonSize::Sm, variant: ButtonVariant::Ghost, onclick: move |_| on_done.call(()), "Cancel" }
+            }
+        }
+    }
+}
+
+/// Live output of the running (or last) download and install, polled from the worker threads.
+#[component]
+fn ConsolePanel(id: u64, busy: Option<Busy>) -> Element {
+    let store = use_store();
+    let mut snap = use_signal(|| console::snapshot(id));
+    use_future(move || async move {
+        let mut last = None;
+        loop {
+            let g = console::generation(id);
+            // While running, refresh at least once a second so the "quiet for" hint updates.
+            if g != last || g.is_some_and(|(_, running)| running) {
+                snap.set(console::snapshot(id));
+                last = g;
+            }
+            app::sleep_ms(400).await;
+        }
+    });
+    let Some(s) = snap() else { return rsx! {} };
+    let scope = store.cfg.read().settings.scope;
+    let start = s.lines.len().saturating_sub(500);
+    let shown = &s.lines[start..];
+    let copy = {
+        let text = s.lines.join("\n");
+        move |_| {
+            let js = format!("navigator.clipboard.writeText({});", serde_json::to_string(&text).unwrap_or_default());
+            document::eval(&js);
+        }
+    };
+
+    rsx! {
+        div { class: "flex flex-col gap-2 rounded-md border bg-muted/50 p-3",
+            div { class: "flex flex-wrap items-center gap-2 text-xs",
+                Icon { name: IconName::Terminal, class: "size-3.5" }
+                span { class: "font-semibold", "Console" }
+                if s.running {
+                    Spinner { class: "size-3" }
+                    span { class: "text-muted-foreground", if let Some(b) = busy { "{b.label()}" } else { "Running…" } }
+                } else {
+                    span { class: "text-muted-foreground", "finished" }
+                }
+                div { class: "ml-auto",
+                    Button { size: ButtonSize::Sm, variant: ButtonVariant::Ghost, onclick: copy, "Copy output" }
+                }
+            }
+            if let Some((done, total)) = s.progress {
+                div { class: "flex items-center gap-2 text-xs text-muted-foreground",
+                    crate::ui::progress::Progress { value: done as f64, max: total.max(1) as f64, class: "flex-1" }
+                    span { class: "tabular-nums", "{file_size(done)} / {file_size(total)}" }
+                }
+            }
+            div { class: "flex max-h-72 flex-col-reverse overflow-auto rounded bg-zinc-950 px-3 py-2",
+                pre { class: "whitespace-pre-wrap break-all font-mono text-[0.75rem] leading-5 text-zinc-100",
+                    if start > 0 { "… {start} earlier lines (Copy output has everything)\n" }
+                    for line in shown.iter() {
+                        span { class: if line.starts_with("$ ") { "text-sky-300" } else if line.to_lowercase().starts_with("error") { "text-red-400" } else { "" },
+                            "{line}\n" }
+                    }
+                }
+            }
+            if s.running && s.quiet_secs >= 20 && busy == Some(Busy::Installing) {
+                p { class: "text-xs text-muted-foreground",
+                    "No new output for {s.quiet_secs} s. The first install of an app also downloads its runtime (for example GNOME, several hundred MB) and flatpak prints little while it does. "
+                    if scope == Scope::System { "System-wide installs also wait for an admin password prompt; check for that window. " }
+                    "You can keep waiting or press Cancel." }
+            } else if s.running && s.quiet_secs >= 30 && busy == Some(Busy::Downloading) && s.progress.is_none_or(|(d, _)| d == 0) {
+                p { class: "text-xs text-muted-foreground", "gh hasn't started writing the file after {s.quiet_secs} s. Check your network, or Cancel and try again." }
             }
         }
     }

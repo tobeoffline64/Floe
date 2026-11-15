@@ -2,6 +2,7 @@
 //! in tests/fake (selected with FLOE_GH / FLOE_FLATPAK).
 
 use floe::config::{Config, Settings, Status};
+use floe::console::Handle;
 use floe::updater;
 use std::path::Path;
 
@@ -46,9 +47,9 @@ fn check_install_and_update() {
 
     // Install: downloads via gh, installs, detects the app ID, deletes the bundle.
     let settings = Settings::default();
-    let (release, bundle) = updater::download(cfg.repo(id).unwrap()).unwrap();
+    let (release, bundle) = updater::download(cfg.repo(id).unwrap(), &Handle::detached()).unwrap();
     assert!(bundle.is_file());
-    let done = updater::install(cfg.repo(id).unwrap(), &bundle, &settings).unwrap();
+    let done = updater::install(cfg.repo(id).unwrap(), &bundle, &settings, &Handle::detached()).unwrap();
     assert!(!bundle.exists(), "bundle removed after install");
     updater::apply_install(cfg.repo_mut(id).unwrap(), &release, done);
     let r = cfg.repo(id).unwrap();
@@ -62,8 +63,8 @@ fn check_install_and_update() {
     updater::apply_check(cfg.repo_mut(id).unwrap(), c);
     assert_eq!(cfg.repo(id).unwrap().status(), Status::UpdateAvailable);
     assert_eq!(cfg.updates(), 1);
-    let (release, bundle) = updater::download(cfg.repo(id).unwrap()).unwrap();
-    let done = updater::install(cfg.repo(id).unwrap(), &bundle, &settings).unwrap();
+    let (release, bundle) = updater::download(cfg.repo(id).unwrap(), &Handle::detached()).unwrap();
+    let done = updater::install(cfg.repo(id).unwrap(), &bundle, &settings, &Handle::detached()).unwrap();
     updater::apply_install(cfg.repo_mut(id).unwrap(), &release, done);
     assert_eq!(cfg.repo(id).unwrap().installed_version.as_deref(), Some("1.2.0"));
     assert_eq!(cfg.repo(id).unwrap().status(), Status::UpToDate);
@@ -73,6 +74,50 @@ fn check_install_and_update() {
     let c = updater::check(cfg.repo(id).unwrap());
     updater::apply_check(cfg.repo_mut(id).unwrap(), c);
     assert_eq!(cfg.repo(id).unwrap().status(), Status::NotInstalled);
+
+    // Already installed before it's added: linked by app ID instead of offering an install.
+    std::fs::write(dir.path().join("installed"), "1.2.0").unwrap();
+    std::fs::write(dir.path().join("extra_apps"), "io.github.someone.Tool\tTool\t0.9\ttool-origin\norg.gnome.Calculator\tCalculator\t47\tflathub\n").unwrap();
+    let mut cfg2 = Config::default();
+    let a = cfg2.add("o/demo", "", "", false).unwrap();
+    let b = cfg2.add("someone/tool", "", "", false).unwrap();
+    let c3 = cfg2.add("gnome/calculator", "", "", false).unwrap();
+    for rid in [a, b, c3] {
+        let c = updater::check(cfg2.repo(rid).unwrap());
+        updater::apply_check(cfg2.repo_mut(rid).unwrap(), c);
+    }
+    let r = cfg2.repo(a).unwrap();
+    assert_eq!((r.app_id.as_str(), r.installed_version.as_deref()), ("io.github.o.Demo", Some("1.2.0")));
+    assert_eq!(r.status(), Status::UpToDate);
+    let r = cfg2.repo(b).unwrap();
+    assert_eq!(r.app_id, "io.github.someone.Tool");
+    assert_eq!(r.status(), Status::UpdateAvailable, "0.9 installed, v1.2.0 released");
+    // Same name but from Flathub: only suggested.
+    let r = cfg2.repo(c3).unwrap();
+    assert_eq!(r.app_id, "");
+    assert_eq!(r.suggested_app_id.as_deref(), Some("org.gnome.Calculator"));
+    assert_eq!(r.status(), Status::NotInstalled);
+
+    // Live output and cancel: a slow install streams its progress and stops when cancelled.
+    std::fs::write(dir.path().join("slow"), "20").unwrap();
+    let job = floe::console::start(42);
+    let (r, b2) = (cfg.repo(id).unwrap().clone(), dir.path().join("cache/x.flatpak"));
+    std::fs::create_dir_all(b2.parent().unwrap()).unwrap();
+    std::fs::write(&b2, "bundle").unwrap();
+    let j = job.clone();
+    let worker = std::thread::spawn(move || updater::install(&r, &b2, &Settings::default(), &j));
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    let lines = floe::console::snapshot(42).unwrap().lines;
+    assert!(lines[0].starts_with("Installing x.flatpak"), "{lines:?}");
+    assert!(lines.iter().any(|l| l.starts_with("$ flatpak install --user")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("Required runtime")), "{lines:?}");
+    let progress: Vec<_> = lines.iter().filter(|l| l.starts_with("Installing 1/2")).collect();
+    assert_eq!(progress.len(), 1, "a \\r progress bar redraws one line: {lines:?}");
+    let started = std::time::Instant::now();
+    floe::console::cancel(42);
+    let res = worker.join().unwrap();
+    assert_eq!(res.err().as_deref(), Some("Cancelled."));
+    assert!(started.elapsed().as_secs() < 3, "cancel stops the process promptly");
 
     let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
     assert!(calls.contains("gh release download v1.2.0 --repo o/demo --pattern demo.flatpak"), "{calls}");

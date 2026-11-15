@@ -23,6 +23,9 @@ pub enum IconName {
     Loader,
     Terminal,
     Notes,
+    Disk,
+    Stop,
+    Link,
 }
 
 fn icon_paths(i: IconName) -> &'static [&'static str] {
@@ -52,6 +55,9 @@ fn icon_paths(i: IconName) -> &'static [&'static str] {
         IconName::Check => &["M20 6 9 17l-5-5"],
         IconName::Loader => &["M21 12a9 9 0 1 1-6.219-8.56"],
         IconName::Terminal => &["m4 17 6-6-6-6", "M12 19h8"],
+        IconName::Disk => &["M22 12H2", "M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z", "M6 16h.01", "M10 16h.01"],
+        IconName::Stop => &["M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z", "M9 9h6v6H9z"],
+        IconName::Link => &["M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71", "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"],
         IconName::Notes => &["M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", "M14 2v4a2 2 0 0 0 2 2h4", "M10 9H8", "M16 13H8", "M16 17H8"],
     }
 }

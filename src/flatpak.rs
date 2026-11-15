@@ -1,5 +1,6 @@
 //! Installing flatpak bundles and reading what's installed, through the `flatpak` command.
 
+use crate::console::Handle;
 use crate::host;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -44,17 +45,110 @@ pub fn available() -> Result<String, String> {
     if out.ok { Ok(out.stdout.trim().to_string()) } else { Err(out.summary()) }
 }
 
-/// Installed application IDs in both installations.
-pub fn installed_apps() -> Vec<String> {
-    let mut ids = Vec::new();
+/// An app found in `flatpak list`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InstalledApp {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    /// The remote it came from; a bundle installed from a file gets "<name>-origin".
+    pub origin: String,
+    pub scope: Scope,
+}
+
+/// Every installed application in both installations.
+pub fn installed_list() -> Vec<InstalledApp> {
+    let mut apps = Vec::new();
     for scope in Scope::ALL {
-        if let Ok(o) = host::run("flatpak", &["list", "--app", scope.flag(), "--columns=application"]) {
-            ids.extend(o.stdout.lines().map(str::trim).filter(|l| is_app_id(l)).map(String::from));
+        if let Ok(o) = host::run("flatpak", &["list", "--app", scope.flag(), "--columns=application,name,version,origin"]) {
+            apps.extend(parse_list(&o.stdout, scope));
         }
     }
+    apps
+}
+
+fn parse_list(stdout: &str, scope: Scope) -> Vec<InstalledApp> {
+    stdout
+        .lines()
+        .filter_map(|l| {
+            let mut cols = l.split('\t').map(str::trim);
+            let id = cols.next()?.to_string();
+            if !is_app_id(&id) {
+                return None;
+            }
+            Some(InstalledApp {
+                name: cols.next().unwrap_or("").to_string(),
+                version: cols.next().unwrap_or("").to_string(),
+                origin: cols.next().unwrap_or("").to_string(),
+                id,
+                scope,
+            })
+        })
+        .collect()
+}
+
+/// Installed application IDs in both installations.
+pub fn installed_apps() -> Vec<String> {
+    let mut ids: Vec<String> = installed_list().into_iter().map(|a| a.id).collect();
     ids.sort();
     ids.dedup();
     ids
+}
+
+/// How sure a match between a repository and an installed app is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Match {
+    /// The ID is `io.github.<owner>.<name>`, or a bundle (origin `<name>-origin`) with that
+    /// name: linked automatically.
+    Sure,
+    /// Only the name matches (for example an app from Flathub): suggested, never linked silently.
+    Possible,
+}
+
+/// The installed app that belongs to a GitHub repository ("owner/Name"), if there is exactly
+/// one candidate.
+pub fn match_installed<'a>(repo: &str, apps: &'a [InstalledApp]) -> Option<(&'a InstalledApp, Match)> {
+    let (owner, name) = repo.split_once('/')?;
+    let exact = format!("io.github.{}.{}", owner.to_lowercase(), name.to_lowercase());
+    if let Some(a) = apps.iter().find(|a| a.id.to_lowercase() == exact) {
+        return Some((a, Match::Sure));
+    }
+    let squash = |s: &str| s.to_lowercase().replace(['-', '_'], "");
+    let want = squash(name);
+    let candidates: Vec<&InstalledApp> = apps
+        .iter()
+        .filter(|a| squash(a.id.rsplit('.').next().unwrap_or("")) == want || a.is_bundle_of(&want))
+        .collect();
+    let mut ids: Vec<&str> = candidates.iter().map(|a| a.id.as_str()).collect();
+    ids.sort();
+    ids.dedup();
+    if ids.len() != 1 {
+        return None;
+    }
+    let app = candidates.iter().find(|a| a.is_bundle_of(&want)).or(candidates.first()).copied()?;
+    Some((app, if app.is_bundle_of(&want) { Match::Sure } else { Match::Possible }))
+}
+
+impl InstalledApp {
+    /// Installed from a bundle file (not a remote such as Flathub).
+    pub fn from_bundle(&self) -> bool {
+        self.origin.ends_with("-origin")
+    }
+
+    fn is_bundle_of(&self, squashed_name: &str) -> bool {
+        self.from_bundle()
+            && self.origin.trim_end_matches("-origin").to_lowercase().replace(['-', '_'], "") == squashed_name
+    }
+}
+
+/// For an untracked installed app with a GitHub-style ID (`io.github.owner.Name`), the
+/// repository it most likely comes from.
+pub fn guess_repo(app_id: &str) -> Option<String> {
+    let parts: Vec<&str> = app_id.split('.').collect();
+    match parts.as_slice() {
+        ["io", "github", owner, name] => Some(format!("{owner}/{name}")),
+        _ => None,
+    }
 }
 
 /// The version of an installed app (from its AppStream metadata), if it is installed.
@@ -83,11 +177,11 @@ fn parse_info_version(info: &str) -> Option<String> {
         .find(|v| !v.is_empty())
 }
 
-/// Install (or reinstall over an existing copy) a `.flatpak` bundle. App data in
-/// `~/.var/app/<id>` is kept. Returns the command output for the activity log.
-pub fn install_bundle(path: &Path, scope: Scope) -> Result<String, String> {
+/// Install (or reinstall over an existing copy) a `.flatpak` bundle, streaming flatpak's
+/// output to `job`. App data in `~/.var/app/<id>` is kept. Returns the output for the log.
+pub fn install_bundle(path: &Path, scope: Scope, job: &Handle) -> Result<String, String> {
     let p = path.to_string_lossy().into_owned();
-    let out = host::run("flatpak", &["install", scope.flag(), "-y", "--noninteractive", "--reinstall", &p])?;
+    let out = host::run_streaming("flatpak", &["install", scope.flag(), "-y", "--noninteractive", "--reinstall", &p], job)?;
     if out.ok {
         return Ok(out.text());
     }
@@ -103,6 +197,8 @@ pub fn install_bundle(path: &Path, scope: Scope) -> Result<String, String> {
             out.summary(),
             scope.flag()
         )
+    } else if lower.contains("polkit") || lower.contains("not allowed") || lower.contains("authoriz") {
+        format!("{}\nSystem-wide installs need an admin password prompt (polkit). Choose \"Just me\" in Settings to install without one.", out.summary())
     } else {
         out.summary()
     })
@@ -167,6 +263,27 @@ mod tests {
         let info = "\nPenguinFin - Offline planner\n\n          ID: io.github.tobeoffline64.PenguinFin\n         Ref: app/x\n     Version: 1.3.0\n     License: MIT\n";
         assert_eq!(parse_info_version(info).as_deref(), Some("1.3.0"));
         assert_eq!(parse_info_version("ID: x"), None);
+    }
+
+    #[test]
+    fn lists_and_matches_installed() {
+        let out = "io.github.tobeoffline64.PenguinFin\tPenguinFin\t1.3.0\tpenguinfin-origin\norg.gnome.Calculator\tCalculator\t47.1\tflathub\ncom.example.Notes-App\tNotes\t\tnotes-app-origin\n";
+        let apps = parse_list(out, Scope::User);
+        assert_eq!(apps.len(), 3);
+        assert_eq!(apps[0].version, "1.3.0");
+        assert_eq!(apps[0].origin, "penguinfin-origin");
+        let m = |r: &str| match_installed(r, &apps).map(|(a, m)| (a.id.clone(), m));
+        let pf = Some(("io.github.tobeoffline64.PenguinFin".to_string(), Match::Sure));
+        assert_eq!(m("tobeoffline64/PenguinFin"), pf);
+        assert_eq!(m("TobeOffline64/penguinfin"), pf);
+        // Someone else's fork with the same name: still the installed bundle named penguinfin.
+        assert_eq!(m("fork/PenguinFin"), pf);
+        assert_eq!(m("someone/notes_app"), Some(("com.example.Notes-App".to_string(), Match::Sure)));
+        // From Flathub, name only: just a suggestion.
+        assert_eq!(m("gnome/calculator"), Some(("org.gnome.Calculator".to_string(), Match::Possible)));
+        assert_eq!(m("me/unknown"), None);
+        assert_eq!(guess_repo("io.github.tobeoffline64.PenguinFin").as_deref(), Some("tobeoffline64/PenguinFin"));
+        assert_eq!(guess_repo("org.gnome.Calculator"), None);
     }
 
     #[test]

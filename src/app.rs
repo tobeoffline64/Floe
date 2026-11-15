@@ -3,7 +3,8 @@ use crate::widgets::{Icon, IconName};
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use floe::config::{Config, Status, UiScale};
-use floe::{gh, host, updater};
+use floe::flatpak::InstalledApp;
+use floe::{console, gh, host, updater};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -11,6 +12,7 @@ use std::sync::Mutex;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
     Apps,
+    Installed,
     Activity,
     Settings,
 }
@@ -61,6 +63,8 @@ pub struct Store {
     pub gh: Signal<Option<gh::Status>>,
     /// True while "Update all" works through the list.
     pub updating_all: Signal<bool>,
+    /// Installed flatpaks, loaded by the Installed page.
+    pub installed: Signal<Option<Vec<InstalledApp>>>,
 }
 
 impl Store {
@@ -137,6 +141,7 @@ pub fn App() -> Element {
             flash: Signal::new(None),
             gh: Signal::new(None),
             updating_all: Signal::new(false),
+            installed: Signal::new(None),
         };
         provide_context(store);
         Ok(store)
@@ -237,6 +242,7 @@ fn Shell() -> Element {
 
     let nav = [
         (Page::Apps, "Apps", IconName::Package, updates),
+        (Page::Installed, "Installed", IconName::Disk, 0),
         (Page::Activity, "Activity", IconName::Activity, errors),
         (Page::Settings, "Settings", IconName::Settings, 0),
     ];
@@ -286,6 +292,7 @@ fn Shell() -> Element {
                     div { class: "mx-auto flex max-w-5xl flex-col gap-6 p-4 @2xl:p-6 @3xl:p-8",
                         match p {
                             Page::Apps => rsx! { views::apps::AppsPage { on_settings: move |_| page.set(Page::Settings) } },
+                            Page::Installed => rsx! { views::installed::InstalledPage { on_apps: move |_| page.set(Page::Apps) } },
                             Page::Activity => rsx! { views::activity::ActivityPage {} },
                             Page::Settings => rsx! { views::settings::SettingsPage {} },
                         }
@@ -434,9 +441,10 @@ pub async fn check_repo(mut store: Store, id: u64) {
     let before = repo.status();
     let result = off_thread(move || updater::check(&repo)).await;
     let mut entry = None;
+    let mut found = None;
     store.update(|c| {
         if let Some(r) = c.repo_mut(id) {
-            updater::apply_check(r, result);
+            found = updater::apply_check(r, result).map(|n| (r.repo.clone(), n));
             let latest = r.latest.as_ref().map(|l| l.tag.clone()).unwrap_or_default();
             entry = Some(match (&r.last_error, r.status()) {
                 (Some(e), _) => (r.repo.clone(), format!("Check failed: {e}"), true),
@@ -447,10 +455,57 @@ pub async fn check_repo(mut store: Store, id: u64) {
             });
         }
     });
+    if let Some((repo, note)) = found {
+        store.log(&repo, note, false, "");
+    }
     if let Some((repo, text, err)) = entry {
         store.log(&repo, text, err, "");
     }
     store.set_busy(id, None);
+}
+
+/// Link every tracked repository that has no app ID yet to a matching installed flatpak,
+/// without contacting GitHub.
+pub fn link_installed_apps(mut store: Store) {
+    spawn_forever(async move {
+        let installed = off_thread(floe::flatpak::installed_list).await;
+        let mut notes = Vec::new();
+        store.update(|c| {
+            for r in c.repos.iter_mut() {
+                if let Some(n) = updater::link_installed(r, &installed) {
+                    notes.push((r.repo.clone(), n));
+                }
+                if !r.app_id.is_empty() && r.app_present {
+                    // Refresh version/origin for linked apps too.
+                    let app = installed.iter().find(|a| a.id == r.app_id).cloned();
+                    r.app_present = app.is_some();
+                    if let Some(a) = app {
+                        r.installed_version = Some(a.version).filter(|v| !v.is_empty());
+                        r.installed_origin = a.origin;
+                    }
+                }
+            }
+        });
+        let linked = notes.iter().filter(|(_, n)| n.contains("linked")).count();
+        for (repo, n) in notes {
+            store.log(&repo, n, false, "");
+        }
+        store.installed.set(Some(installed));
+        store.notify(
+            match linked {
+                0 => "No new matches among your installed flatpaks.".to_string(),
+                1 => "Linked 1 repository to an installed flatpak.".to_string(),
+                n => format!("Linked {n} repositories to installed flatpaks."),
+            },
+            false,
+        );
+    });
+}
+
+/// Refresh the list of installed flatpaks (Installed page).
+pub async fn refresh_installed(mut store: Store) {
+    let installed = off_thread(floe::flatpak::installed_list).await;
+    store.installed.set(Some(installed));
 }
 
 /// Check every repository in parallel.
@@ -513,8 +568,9 @@ pub async fn update_repo(mut store: Store, id: u64) -> bool {
     let settings = store.cfg.peek().settings.clone();
 
     store.set_busy(id, Some(Busy::Downloading));
-    let r = repo.clone();
-    let downloaded = off_thread(move || updater::download(&r)).await;
+    let job = console::start(id);
+    let (r, j) = (repo.clone(), job.clone());
+    let downloaded = off_thread(move || updater::download(&r, &j)).await;
     let (release, path) = match downloaded {
         Ok(v) => v,
         Err(e) => return fail(store, id, &name, format!("Download failed: {e}")),
@@ -522,12 +578,11 @@ pub async fn update_repo(mut store: Store, id: u64) -> bool {
     store.log(&name, format!("Downloaded {} ({})", path.file_name().unwrap_or_default().to_string_lossy(), release.tag), false, path.display().to_string());
 
     store.set_busy(id, Some(Busy::Installing));
-    let r = repo.clone();
-    let p = path.clone();
-    let installed = off_thread(move || updater::install(&r, &p, &settings)).await;
+    let (r, p, j) = (repo.clone(), path.clone(), job.clone());
+    let installed = off_thread(move || updater::install(&r, &p, &settings, &j)).await;
+    console::finish(id);
     match installed {
         Ok(done) => {
-            let log = done.log.clone();
             let detected = repo.app_id.is_empty().then(|| done.app_id.clone()).flatten();
             store.update(|c| {
                 if let Some(r) = c.repo_mut(id) {
@@ -538,7 +593,7 @@ pub async fn update_repo(mut store: Store, id: u64) -> bool {
             if let Some(app) = detected {
                 msg.push_str(&format!(" · app ID {app}"));
             }
-            store.log(&name, msg, false, log);
+            store.log(&name, msg, false, console::text(id));
             store.set_busy(id, None);
             store.notify(format!("{} {} installed.", repo.name(), release.tag), false);
             true
@@ -548,12 +603,24 @@ pub async fn update_repo(mut store: Store, id: u64) -> bool {
 }
 
 fn fail(mut store: Store, id: u64, name: &str, msg: String) -> bool {
+    console::finish(id);
+    let cancelled = msg.ends_with("Cancelled.");
+    if cancelled {
+        store.log(name, "Cancelled", false, console::text(id));
+        store.set_busy(id, None);
+        store.notify(format!("{name}: cancelled."), false);
+        return false;
+    }
     store.update(|c| {
         if let Some(r) = c.repo_mut(id) {
             r.last_error = Some(msg.clone());
         }
     });
-    store.log(name, msg.lines().next().unwrap_or(&msg).to_string(), true, msg.clone());
+    let details = match console::text(id) {
+        t if t.is_empty() => msg.clone(),
+        t => format!("{msg}\n\n--- console ---\n{t}"),
+    };
+    store.log(name, msg.lines().next().unwrap_or(&msg).to_string(), true, details);
     store.set_busy(id, None);
     store.notify(format!("{name}: {msg}"), true);
     false
