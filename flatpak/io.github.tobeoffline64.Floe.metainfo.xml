@@ -20,6 +20,9 @@
   <developer id="io.github.tobeoffline64"><name>tobeoffline64</name></developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.1" date="2026-11-15">
+      <description><p>The Add repository form shows a generic example (owner/app-name) instead of a specific repository.</p></description>
+    </release>
     <release version="0.3.0" date="2026-11-15">
       <description>
         <p>Floe can update itself: Settings → Floe updates checks its own GitHub releases, installs the new version with a live console, and restarts.</p>

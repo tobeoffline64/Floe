@@ -57,14 +57,15 @@ flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/fl
 
 Flathub is only needed for the runtimes the bundles depend on (for example GNOME 49).
 
-## Track PenguinFin (or any other app)
+## Track an app
 
-1. **Add repository** → `tobeoffline64/PenguinFin` → **Add and check**.
+1. **Add repository** → `owner/app-name` (or paste `https://github.com/owner/app-name`) →
+   **Add and check**.
 2. Click **Install** (or **Update to v…**). Floe fills in the app ID
-   (`io.github.tobeoffline64.PenguinFin`) after the install.
+   (for example `io.github.owner.AppName`) after the install.
 
 A repository works with Floe if its releases have a `.flatpak` bundle attached, which is what
-PenguinFin's `.github/workflows/release.yml` (and Floe's own) publishes. If a release has
+Floe's own `.github/workflows/release.yml` publishes. If a release has
 several bundles, set **Release file** to a pattern such as `*-x86_64.flatpak`.
 
 ## Install Floe

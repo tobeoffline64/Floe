@@ -141,7 +141,7 @@ fn AddRepoCard(on_done: EventHandler<()>) -> Element {
             CardContent { class: "flex flex-col gap-4",
                 div { key: "{generation}", class: "grid gap-4 @2xl:grid-cols-2",
                     Field { label: "Repository", hint: "owner/name, or paste the GitHub link",
-                        Input { placeholder: "tobeoffline64/PenguinFin", value: repo(),
+                        Input { placeholder: "owner/app-name", value: repo(),
                             oninput: move |e: FormEvent| repo.set(e.value()) } }
                     Field { label: "Release file", hint: "Which asset to install. * matches anything.",
                         Input { placeholder: gh::DEFAULT_PATTERN, value: pattern(),
