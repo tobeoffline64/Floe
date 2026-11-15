@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Fake flatpak for tests. Installed app version in $FAKE_DIR/installed (absent = not installed).
+echo "flatpak $*" >> "$FAKE_DIR/calls"
+case "$1" in
+  --version) echo "Flatpak 1.16.0";;
+  list) [[ "$*" == *--user* && -f "$FAKE_DIR/installed" ]] && echo "io.github.o.Demo"; true;;
+  info) [[ "$*" == *--user* && -f "$FAKE_DIR/installed" ]] || { echo "error: io.github.o.Demo not installed" >&2; exit 1; }
+        printf '\nDemo\n\n     ID: io.github.o.Demo\n Version: %s\n' "$(cat "$FAKE_DIR/installed")";;
+  install) f="${@: -1}"; [[ -f "$f" ]] || { echo "error: no file" >&2; exit 1; }
+           cat "$FAKE_DIR/tag" 2>/dev/null | sed 's/^v//' > "$FAKE_DIR/installed" || echo 1.1.0 > "$FAKE_DIR/installed"
+           [[ -s "$FAKE_DIR/installed" ]] || echo 1.1.0 > "$FAKE_DIR/installed"
+           echo "Installing app/io.github.o.Demo/x86_64/master";;
+  run) ;;
+esac

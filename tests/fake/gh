@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Fake GitHub CLI for tests. State: $FAKE_DIR (latest tag in $FAKE_DIR/tag, default v1.1.0).
+TAG=$(cat "$FAKE_DIR/tag" 2>/dev/null || echo v1.1.0)
+echo "gh $*" >> "$FAKE_DIR/calls"
+case "$1 $2" in
+  "--version ") echo "gh version 2.62.0 (2026-01-01)";;
+  "auth status") echo "github.com"; echo "  ✓ Logged in to github.com account tester (keyring)";;
+  "release list")
+    if [[ "$*" == *missing/repo* ]]; then echo "GraphQL: Could not resolve to a Repository with the name 'missing/repo'." >&2; exit 1; fi
+    echo "[{\"tagName\":\"$TAG\"}]";;
+  "release view")
+    cat <<JSON
+{"tagName":"$3","name":"Demo $3","publishedAt":"2026-11-15T20:00:00Z","isPrerelease":false,
+ "url":"https://github.com/o/demo/releases/tag/$3","body":"## Changes\n- Faster","assets":[
+ {"name":"demo-source.tar.gz","size":100},{"name":"demo.flatpak","size":24100000}]}
+JSON
+    ;;
+  "release download")
+    dir=""; while [[ $# -gt 0 ]]; do [[ "$1" == --dir ]] && dir="$2"; shift; done
+    echo "bundle" > "$dir/demo.flatpak";;
+  *) echo "unknown command" >&2; exit 1;;
+esac

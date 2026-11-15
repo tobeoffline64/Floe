@@ -1,0 +1,72 @@
+# Build:  ./build-flatpak.sh   (vendors crates, then runs flatpak-builder offline)
+app-id: io.github.tobeoffline64.Floe
+runtime: org.gnome.Platform
+runtime-version: '49'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: floe
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Floe drives the host's `gh` and `flatpak` (your GitHub login and your flatpak
+  # installation live there) with `flatpak-spawn --host`. This is effectively full access
+  # to your user session, which an app installer needs anyway.
+  - --talk-name=org.freedesktop.Flatpak
+  # Desktop notifications when a background check finds updates.
+  - --talk-name=org.freedesktop.Notifications
+  # Export / import of the repository list.
+  - --filesystem=xdg-download
+  # Required by the webview: Dioxus drives the UI over a local 127.0.0.1 websocket, and
+  # WebKit's sandboxed network process cannot reach the app's loopback without this.
+  - --share=network
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+modules:
+  # dioxus-desktop (via muda) links libxdo, which the GNOME runtime does not ship.
+  - name: libxdo
+    buildsystem: simple
+    build-commands:
+      - make PREFIX=/app libxdo.so
+      - make PREFIX=/app INSTALLLIB=/app/lib INSTALLINCLUDE=/app/include installlib installheader
+    sources:
+      - type: archive
+        url: https://github.com/jordansissel/xdotool/releases/download/v3.20211022.1/xdotool-3.20211022.1.tar.gz
+        sha256: 96f0facfde6d78eacad35b91b0f46fecd0b35e474c03e00e30da3fdd345f9ada
+    cleanup:
+      - /include
+
+  - name: floe
+    buildsystem: simple
+    build-options:
+      env:
+        CARGO_HOME: /run/build/floe/cargo-home
+        CARGO_NET_OFFLINE: 'true'
+        LIBRARY_PATH: /app/lib
+    build-commands:
+      # build-flatpak.sh (without --clean) compiles incrementally inside the same SDK and
+      # leaves the binary in .flatpak-prebuilt/. Otherwise build from source here.
+      - |
+        if [ -x .flatpak-prebuilt/floe ]; then
+          install -Dm755 .flatpak-prebuilt/floe /app/bin/floe
+        else
+          mkdir -p cargo-home && cp flatpak/cargo-vendor-config.toml cargo-home/config.toml
+          cargo --offline build --release --locked
+          install -Dm755 target/release/floe /app/bin/floe
+        fi
+      - install -Dm644 flatpak/io.github.tobeoffline64.Floe.desktop /app/share/applications/io.github.tobeoffline64.Floe.desktop
+      - install -Dm644 flatpak/io.github.tobeoffline64.Floe.metainfo.xml /app/share/metainfo/io.github.tobeoffline64.Floe.metainfo.xml
+      - install -Dm644 flatpak/io.github.tobeoffline64.Floe.svg /app/share/icons/hicolor/scalable/apps/io.github.tobeoffline64.Floe.svg
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - target
+          - node_modules
+          - .flatpak-dev
+          - .flatpak-builder
+          - build-dir
+          - repo
+          - dist

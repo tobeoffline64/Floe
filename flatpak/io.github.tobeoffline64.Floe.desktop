@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Floe
+GenericName=Flatpak Updater
+Comment=Install and update flatpak apps straight from GitHub releases
+Exec=floe
+Icon=io.github.tobeoffline64.Floe
+Terminal=false
+Categories=System;PackageManager;
+Keywords=flatpak;github;releases;update;install;obtainium;
+StartupWMClass=floe

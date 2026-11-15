@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.tobeoffline64.Floe</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Floe</name>
+  <summary>Install and update flatpaks from GitHub releases</summary>
+  <description>
+    <p>Floe keeps a list of GitHub repositories that attach a .flatpak bundle to their releases,
+    checks them for new versions and installs updates, without publishing anything to Flathub.
+    It uses the GitHub CLI, so private repositories work with your existing login.</p>
+    <ul>
+      <li>Add repositories by owner/name or link, with an optional asset pattern and pre-releases</li>
+      <li>Check one or all repositories, on launch and on a schedule</li>
+      <li>Install or update with one click, or update everything at once</li>
+      <li>Release notes, activity log and desktop notifications</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.tobeoffline64.Floe.desktop</launchable>
+  <developer id="io.github.tobeoffline64"><name>tobeoffline64</name></developer>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-15">
+      <description><p>First release.</p></description>
+    </release>
+  </releases>
+</component>

@@ -1,0 +1,81 @@
+# Publishes a GitHub release with the flatpak bundle and source archive.
+#
+# Triggers:
+#   - push to main: releases v<version from Cargo.toml> if that release doesn't exist yet
+#     (so bumping `version` in Cargo.toml and pushing cuts a new release)
+#   - pushing a v* tag, or running the workflow manually
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# One release build at a time; a queued run re-checks and skips if the release now exists.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f2)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists; nothing to do."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  flatpak:
+    needs: check
+    if: needs.check.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install flatpak tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          # Ubuntu 24.04 blocks unprivileged user namespaces, which bubblewrap needs.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Build flatpak bundle
+        run: ./build-flatpak.sh --clean
+
+      - name: Source archive
+        run: |
+          git archive --format=tar.gz --prefix="Floe-${VERSION}/" \
+            -o "dist/floe-${VERSION}-source.tar.gz" HEAD
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: floe-${{ env.VERSION }}
+          path: dist/*
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          name: Floe ${{ env.VERSION }}
+          body_path: .github/release-notes.md
+          files: dist/*
