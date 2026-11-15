@@ -94,6 +94,8 @@ pub struct Settings {
     pub scope: Scope,
     /// Keep downloaded .flatpak files instead of deleting them after installing.
     pub keep_downloads: bool,
+    /// Look for a newer Floe release when Floe opens (and with the periodic checks).
+    pub check_self: bool,
 }
 
 impl Default for Settings {
@@ -106,6 +108,7 @@ impl Default for Settings {
             notify: true,
             scope: Scope::User,
             keep_downloads: false,
+            check_self: true,
         }
     }
 }

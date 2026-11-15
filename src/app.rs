@@ -65,6 +65,35 @@ pub struct Store {
     pub updating_all: Signal<bool>,
     /// Installed flatpaks, loaded by the Installed page.
     pub installed: Signal<Option<Vec<InstalledApp>>>,
+    /// Floe's own update state (Settings → Floe updates).
+    pub self_update: Signal<SelfUpdate>,
+}
+
+/// Console/job id used for Floe's own update (tracked repositories use small ids).
+pub const SELF_ID: u64 = u64::MAX - 1;
+
+#[derive(Clone, Default, PartialEq)]
+pub struct SelfUpdate {
+    pub latest: Option<gh::Release>,
+    pub error: Option<String>,
+    pub busy: Option<Busy>,
+    pub checked: Option<String>,
+    /// The tag that was just installed; Floe needs a restart to use it.
+    pub installed: Option<String>,
+}
+
+impl SelfUpdate {
+    pub fn current() -> &'static str {
+        env!("CARGO_PKG_VERSION")
+    }
+
+    /// The latest release, if it's newer than the running Floe.
+    pub fn newer(&self) -> Option<&gh::Release> {
+        self.latest.as_ref().filter(|l| {
+            floe::version::compare(&l.tag, Self::current()) == Some(std::cmp::Ordering::Greater)
+                && self.installed.as_deref() != Some(l.tag.as_str())
+        })
+    }
 }
 
 impl Store {
@@ -142,6 +171,7 @@ pub fn App() -> Element {
             gh: Signal::new(None),
             updating_all: Signal::new(false),
             installed: Signal::new(None),
+            self_update: Signal::new(SelfUpdate::default()),
         };
         provide_context(store);
         Ok(store)
@@ -218,6 +248,9 @@ fn Shell() -> Element {
         spawn_forever(async move {
             refresh_gh_status(store).await;
             let s = store.cfg.peek().settings.clone();
+            if s.check_self {
+                spawn_forever(check_self(store, false));
+            }
             if s.check_on_launch && !store.cfg.peek().repos.is_empty() {
                 sleep_ms(600).await;
                 check_all_and_notify(store).await;
@@ -228,6 +261,9 @@ fn Shell() -> Element {
                 let hours = store.cfg.peek().settings.check_interval_hours;
                 if hours > 0 && last.elapsed().as_secs() >= u64::from(hours) * 3600 {
                     last = std::time::Instant::now();
+                    if store.cfg.peek().settings.check_self {
+                        check_self(store, false).await;
+                    }
                     check_all_and_notify(store).await;
                 }
             }
@@ -244,7 +280,7 @@ fn Shell() -> Element {
         (Page::Apps, "Apps", IconName::Package, updates),
         (Page::Installed, "Installed", IconName::Disk, 0),
         (Page::Activity, "Activity", IconName::Activity, errors),
-        (Page::Settings, "Settings", IconName::Settings, 0),
+        (Page::Settings, "Settings", IconName::Settings, usize::from(store.self_update.read().newer().is_some())),
     ];
 
     rsx! {
@@ -663,5 +699,109 @@ pub fn launch(mut store: Store, app_id: String) {
 pub fn open_url(mut store: Store, url: String) {
     if let Err(e) = host::open_url(&url) {
         store.notify(e, true);
+    }
+}
+
+// ---------- Floe's own updates ----------
+
+/// Look for a newer Floe release on GitHub.
+pub async fn check_self(mut store: Store, manual: bool) {
+    if store.self_update.peek().busy.is_some() {
+        return;
+    }
+    store.self_update.write().busy = Some(Busy::Checking);
+    let result = off_thread(|| gh::latest_release(host::FLOE_REPO, false)).await;
+    let notify_new = {
+        let mut su = store.self_update.write();
+        su.busy = None;
+        su.checked = Some(updater::now());
+        let had = su.newer().map(|l| l.tag.clone());
+        match result {
+            Ok(r) => {
+                su.latest = Some(r);
+                su.error = None;
+            }
+            Err(e) => su.error = Some(e),
+        }
+        su.newer().map(|l| l.tag.clone()).filter(|t| had.as_ref() != Some(t))
+    };
+    let err = store.self_update.peek().error.clone();
+    match (&notify_new, &err) {
+        (_, Some(e)) => store.log("Floe", format!("Floe update check failed: {e}"), true, ""),
+        (Some(tag), None) => store.log("Floe", format!("Floe {tag} is available (you have {})", SelfUpdate::current()), false, ""),
+        (None, None) => {}
+    }
+    if manual {
+        let newer = store.self_update.peek().newer().map(|l| l.tag.clone());
+        match (newer, err) {
+            (_, Some(e)) => store.notify(format!("Could not check for Floe updates: {e}"), true),
+            (Some(tag), None) => store.notify(format!("Floe {tag} is available."), false),
+            (None, None) => store.notify(format!("Floe {} is the latest version.", SelfUpdate::current()), false),
+        }
+    } else if let Some(tag) = notify_new
+        && store.cfg.peek().settings.notify
+    {
+        std::thread::spawn(move || host::notify("Floe update available", &format!("Floe {tag} can be installed from Settings.")));
+    }
+}
+
+/// Download and install the latest Floe flatpak (into the installation Floe itself runs from).
+pub async fn update_self(mut store: Store) {
+    let Some(release) = store.self_update.peek().latest.clone() else { return };
+    if store.self_update.peek().busy.is_some() {
+        return;
+    }
+    let mut settings = store.cfg.peek().settings.clone();
+    if let Some(scope) = host::own_scope() {
+        settings.scope = scope;
+    }
+    let repo = floe::config::TrackedRepo {
+        id: SELF_ID,
+        repo: host::FLOE_REPO.to_string(),
+        app_id: host::FLOE_APP_ID.to_string(),
+        latest: Some(release.clone()),
+        ..Default::default()
+    };
+    store.self_update.write().busy = Some(Busy::Downloading);
+    let job = console::start(SELF_ID);
+    let (r, j) = (repo.clone(), job.clone());
+    let downloaded = off_thread(move || updater::download(&r, &j)).await;
+    let result = match downloaded {
+        Err(e) => Err(format!("Download failed: {e}")),
+        Ok((_, path)) => {
+            store.self_update.write().busy = Some(Busy::Installing);
+            let j = job.clone();
+            off_thread(move || updater::install(&repo, &path, &settings, &j)).await.map_err(|e| format!("Install failed: {e}"))
+        }
+    };
+    console::finish(SELF_ID);
+    store.self_update.write().busy = None;
+    match result {
+        Ok(_) => {
+            store.self_update.write().installed = Some(release.tag.clone());
+            store.log("Floe", format!("Installed Floe {}; restart to use it", release.tag), false, console::text(SELF_ID));
+            store.notify(format!("Floe {} installed. Restart Floe to use it.", release.tag), false);
+        }
+        Err(e) if e.ends_with("Cancelled.") => {
+            store.log("Floe", "Floe update cancelled", false, console::text(SELF_ID));
+        }
+        Err(e) => {
+            store.self_update.write().error = Some(e.clone());
+            store.log("Floe", e.lines().next().unwrap_or(&e).to_string(), true, format!("{e}\n\n--- console ---\n{}", console::text(SELF_ID)));
+            store.notify(format!("Floe update: {e}"), true);
+        }
+    }
+}
+
+/// Start the newly installed Floe and quit this one.
+pub fn restart_self(mut store: Store) {
+    match host::relaunch_self() {
+        Ok(()) => {
+            spawn_forever(async {
+                sleep_ms(300).await;
+                std::process::exit(0);
+            });
+        }
+        Err(e) => store.notify(e, true),
     }
 }

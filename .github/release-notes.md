@@ -1,7 +1,6 @@
-Floe 0.2.0
+Floe 0.3.0
 
-- **Live console** for every download and install: see `gh` and `flatpak` output as it happens, with a download progress bar, **Cancel**, and **Copy output**. If flatpak goes quiet (for example while it downloads an app's runtime the first time), Floe says so instead of looking frozen.
-- **Already-installed apps are found and linked** when you add a repository: an installed app with the ID `io.github.<owner>.<Name>`, or a bundle with the same name, shows its installed version instead of offering a reinstall. Apps from Flathub with a similar name are only suggested.
-- New **Installed** page: every flatpak on this computer, which repository it belongs to, and one-click **Track** for GitHub-hosted apps.
+- **Floe updates itself.** Settings → *Floe updates* shows your version, checks `tobeoffline64/Floe` for a newer release (automatically when Floe opens and with the scheduled checks, or with *Check for updates*), installs it with the same live console and Cancel as app installs, then offers **Restart Floe**. The Settings item gets a badge and you get a desktop notification when a new version is out. Floe installs into the same installation it runs from (user or system).
+- Running a build from source? The card says so: updating there installs the flatpak alongside it, and shows how to update the source build instead.
 
-Update from Floe itself, or: `gh release download --repo tobeoffline64/Floe --pattern floe.flatpak --dir /tmp --clobber && flatpak install --user -y --reinstall /tmp/floe.flatpak`
+From 0.2.0 and earlier, update once the usual way (Floe's own list, or `gh release download --repo tobeoffline64/Floe --pattern floe.flatpak --dir /tmp --clobber && flatpak install --user -y --reinstall /tmp/floe.flatpak`); from then on use Settings.

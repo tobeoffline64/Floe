@@ -458,7 +458,7 @@ fn EditRepo(repo: TrackedRepo, on_done: EventHandler<()>) -> Element {
 
 /// Live output of the running (or last) download and install, polled from the worker threads.
 #[component]
-fn ConsolePanel(id: u64, busy: Option<Busy>) -> Element {
+pub fn ConsolePanel(id: u64, busy: Option<Busy>) -> Element {
     let store = use_store();
     let mut snap = use_signal(|| console::snapshot(id));
     use_future(move || async move {

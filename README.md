@@ -39,6 +39,10 @@ Built in **Rust** with **[Dioxus](https://dioxuslabs.com) desktop** and the
   (`io.github.owner.Name` → `owner/Name`).
 - Release notes, **Open app**, **Reinstall**, link to the release on GitHub.
 - **Activity** page with the full `gh` / `flatpak` output of everything Floe did.
+- **Self-update**: Settings → *Floe updates* checks this repository's releases (on launch, on
+  the schedule, or on demand), shows what's new, installs the new `floe.flatpak` into the
+  same installation Floe runs from, and restarts Floe. A badge on Settings and a desktop
+  notification tell you when a new version is out.
 - **Settings**: `gh` and flatpak status, install for the user (`--user`, default) or system-wide
   (`--system`), keep or delete downloaded bundles, export/import the list (JSON in
   `~/Downloads`), dark mode, interface size (`Ctrl +` / `Ctrl −` / `Ctrl 0`).
@@ -73,7 +77,7 @@ flatpak install --user -y --reinstall /tmp/floe.flatpak
 flatpak run io.github.tobeoffline64.Floe
 ```
 
-Then add `tobeoffline64/Floe` to its own list and it keeps itself up to date.
+After that, Floe updates itself from **Settings → Floe updates**.
 
 Inside the sandbox Floe runs `gh`, `flatpak`, `xdg-open` and `notify-send` **on the host**
 with `flatpak-spawn --host`, because your GitHub login and flatpak installation live there.

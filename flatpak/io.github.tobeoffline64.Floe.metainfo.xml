@@ -20,6 +20,11 @@
   <developer id="io.github.tobeoffline64"><name>tobeoffline64</name></developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.3.0" date="2026-11-15">
+      <description>
+        <p>Floe can update itself: Settings → Floe updates checks its own GitHub releases, installs the new version with a live console, and restarts.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-11-15">
       <description>
         <p>Live console output for downloads and installs, with a Cancel button and a download progress bar. Apps that are already installed are found and linked when you add their repository, and a new Installed page lists the flatpaks on this computer.</p>

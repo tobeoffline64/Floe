@@ -58,6 +58,8 @@ pub fn SettingsPage() -> Element {
     rsx! {
         PageHeader { title: "Settings" }
 
+        SelfUpdateCard {}
+
         GhCard {}
 
         Card {
@@ -220,6 +222,112 @@ fn GhCard() -> Element {
                         code { class: "rounded bg-muted px-2 py-1 text-xs", "gh auth login" }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Floe's own version: check GitHub for a newer release, install it, restart.
+#[component]
+fn SelfUpdateCard() -> Element {
+    let mut store = use_store();
+    let su = store.self_update.read().clone();
+    let check_self = store.cfg.read().settings.check_self;
+    let mut notes = use_signal(|| false);
+    let sandboxed = host::in_flatpak();
+    let current = app::SelfUpdate::current();
+    let newer = su.newer().cloned();
+    let installing = matches!(su.busy, Some(app::Busy::Downloading | app::Busy::Installing));
+    let has_console = floe::console::generation(app::SELF_ID).is_some();
+
+    rsx! {
+        Card {
+            CardHeader {
+                CardTitle { "Floe updates" }
+                CardDescription { "Floe updates itself from its own GitHub releases ({host::FLOE_REPO}), the same way it updates your apps." }
+            }
+            CardContent { class: "flex flex-col gap-4",
+                div { class: "flex flex-wrap items-center gap-2",
+                    img { class: "size-8", src: app::LOGO_DATA_URI, alt: "" }
+                    div { class: "mr-2",
+                        div { class: "text-sm font-semibold", "Floe {current}" }
+                        div { class: "text-xs text-muted-foreground",
+                            if sandboxed { "Installed as a flatpak" } else { "Native build (not the flatpak)" }
+                            if let Some(t) = &su.checked { " · checked {t}" }
+                        }
+                    }
+                    match (&su.busy, &su.installed, &newer, &su.latest, &su.error) {
+                        (Some(b), _, _, _, _) => rsx! { Badge { variant: BadgeVariant::Secondary, class: "gap-1.5", Spinner { class: "size-3" } "{b.label()}" } },
+                        (None, Some(tag), _, _, _) => rsx! { Badge { variant: BadgeVariant::Success, "{tag} installed · restart to use it" } },
+                        (None, None, Some(l), _, _) => rsx! { Badge { variant: BadgeVariant::Info, "{l.tag} available" } },
+                        (None, None, None, _, Some(_)) => rsx! { Badge { variant: BadgeVariant::Warning, "Check failed" } },
+                        (None, None, None, Some(_), None) => rsx! { Badge { variant: BadgeVariant::Success, "Up to date" } },
+                        _ => rsx! { Badge { variant: BadgeVariant::Muted, "Not checked" } },
+                    }
+                }
+
+                if let Some(e) = &su.error {
+                    p { class: "whitespace-pre-line text-xs text-destructive", "{e}" }
+                }
+
+                if let Some(tag) = &su.installed {
+                    div { class: "flex flex-wrap items-center gap-3 rounded-md bg-success-light px-3 py-2 text-sm text-success-dark",
+                        Icon { name: IconName::Check, class: "size-4" }
+                        span { class: "flex-1", "Floe {tag} is installed. Restart to switch to it; your list and settings are kept." }
+                        Button { size: ButtonSize::Sm, onclick: move |_| app::restart_self(store), Icon { name: IconName::Refresh } "Restart Floe" }
+                    }
+                }
+
+                if !sandboxed {
+                    p { class: "text-xs text-muted-foreground",
+                        "This copy of Floe was built from source, so installing an update adds the flatpak version alongside it (start it with flatpak run {host::FLOE_APP_ID}). To update this build instead: git pull && cargo install --path ." }
+                }
+
+                div { class: "flex flex-wrap items-center gap-2",
+                    Button { size: ButtonSize::Sm, variant: ButtonVariant::Outline, disabled: su.busy.is_some(),
+                        onclick: move |_| { spawn_forever(app::check_self(store, true)); },
+                        if su.busy == Some(app::Busy::Checking) { Spinner {} } else { Icon { name: IconName::Refresh } }
+                        "Check for updates" }
+                    if let Some(l) = &newer {
+                        Button { size: ButtonSize::Sm, disabled: su.busy.is_some(),
+                            onclick: move |_| { spawn_forever(app::update_self(store)); },
+                            Icon { name: IconName::Download }
+                            if sandboxed { "Update to {l.tag}" } else { "Install flatpak {l.tag}" } }
+                    }
+                    if installing {
+                        Button { size: ButtonSize::Sm, variant: ButtonVariant::Destructive,
+                            onclick: move |_| floe::console::cancel(app::SELF_ID), Icon { name: IconName::Stop } "Cancel" }
+                    }
+                    if su.latest.as_ref().is_some_and(|l| !l.body.trim().is_empty()) {
+                        Button { size: ButtonSize::Sm, variant: ButtonVariant::Ghost, onclick: move |_| notes.toggle(),
+                            Icon { name: IconName::Notes } if notes() { "Hide notes" } else { "What's new" } }
+                    }
+                    Button { size: ButtonSize::Sm, variant: ButtonVariant::Ghost,
+                        onclick: {
+                            let url = su.latest.as_ref().map(|l| l.url.clone()).filter(|u| !u.is_empty())
+                                .unwrap_or_else(|| format!("https://github.com/{}/releases", host::FLOE_REPO));
+                            move |_| app::open_url(store, url.clone())
+                        },
+                        Icon { name: IconName::External } "Releases" }
+                }
+
+                if notes() {
+                    if let Some(l) = &su.latest {
+                        div { class: "max-h-72 overflow-y-auto rounded-md border bg-muted p-3",
+                            div { class: "mb-2 text-sm font-semibold", if l.name.is_empty() { "{l.tag}" } else { "{l.name}" } }
+                            pre { class: "whitespace-pre-wrap break-words font-sans text-sm", "{l.body.trim()}" }
+                        }
+                    }
+                }
+
+                if has_console && (installing || su.installed.is_some() || su.error.is_some()) {
+                    crate::views::apps::ConsolePanel { id: app::SELF_ID, busy: su.busy }
+                }
+
+                Separator {}
+                SettingRow { title: "Check for Floe updates automatically", hint: "When Floe opens and with the scheduled checks; notifies you if a new version is out.",
+                    Switch { checked: check_self, aria_label: "Check for Floe updates automatically",
+                        onchange: move |v| store.update(|c| c.settings.check_self = v) } }
             }
         }
     }

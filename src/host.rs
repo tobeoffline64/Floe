@@ -240,6 +240,40 @@ pub fn spawn_detached(name: &str, args: &[&str]) -> Result<(), String> {
         .map_err(|e| format!("could not start `{name}`: {e}"))
 }
 
+/// Floe's own flatpak application ID and GitHub repository (for self-updates).
+pub const FLOE_APP_ID: &str = "io.github.tobeoffline64.Floe";
+pub const FLOE_REPO: &str = "tobeoffline64/Floe";
+
+/// When running as a flatpak: whether Floe itself is installed per-user or system-wide
+/// (read from /.flatpak-info, whose app-path is under /var/lib/flatpak for system installs).
+pub fn own_scope() -> Option<crate::flatpak::Scope> {
+    let info = std::fs::read_to_string("/.flatpak-info").ok()?;
+    Some(parse_own_scope(&info))
+}
+
+fn parse_own_scope(info: &str) -> crate::flatpak::Scope {
+    let path = info.lines().find_map(|l| l.trim().strip_prefix("app-path=")).unwrap_or("");
+    if path.starts_with("/var/lib/flatpak") || path.starts_with("/usr/") {
+        crate::flatpak::Scope::System
+    } else {
+        crate::flatpak::Scope::User
+    }
+}
+
+/// Start a fresh copy of Floe that outlives this one (used after a self-update). Unlike
+/// [`spawn_detached`] this doesn't tie the host process to Floe's lifetime.
+pub fn relaunch_self() -> Result<(), String> {
+    let mut cmd = if in_flatpak() {
+        let mut c = Command::new("flatpak-spawn");
+        c.args(["--host", "flatpak", "run", FLOE_APP_ID]);
+        c
+    } else {
+        Command::new(std::env::current_exe().map_err(|e| e.to_string())?)
+    };
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.spawn().map(|_| ()).map_err(|e| format!("could not restart Floe: {e}"))
+}
+
 /// Open a web page in the default browser.
 pub fn open_url(url: &str) -> Result<(), String> {
     spawn_detached("xdg-open", &[url])
@@ -248,4 +282,18 @@ pub fn open_url(url: &str) -> Result<(), String> {
 /// Show a desktop notification (best effort; silently does nothing without notify-send).
 pub fn notify(title: &str, body: &str) {
     let _ = spawn_detached("notify-send", &["--app-name=Floe", "--icon=io.github.tobeoffline64.Floe", title, body]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flatpak::Scope;
+
+    #[test]
+    fn reads_own_scope() {
+        let user = "[Application]\nname=io.github.tobeoffline64.Floe\n\n[Instance]\napp-path=/home/me/.local/share/flatpak/app/io.github.tobeoffline64.Floe/x86_64/master/abc/files\n";
+        assert_eq!(parse_own_scope(user), Scope::User);
+        let system = "[Instance]\napp-path=/var/lib/flatpak/app/io.github.tobeoffline64.Floe/x86_64/master/abc/files\n";
+        assert_eq!(parse_own_scope(system), Scope::System);
+    }
 }
