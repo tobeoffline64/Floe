@@ -1,22 +1,30 @@
 #!/usr/bin/env bash
-# Fake GitHub CLI for tests. State: $FAKE_DIR (latest tag in $FAKE_DIR/tag, default v1.1.0).
+# Fake GitHub CLI for tests. State in $FAKE_DIR:
+#   tag   latest stable tag (default v1.1.0), bundle demo.flatpak
+#   beta  optional newer pre-release tag (like PenguinFin's v2.0.0-beta.1), bundle demo-2.flatpak
 TAG=$(cat "$FAKE_DIR/tag" 2>/dev/null || echo v1.1.0)
+BETA=$(cat "$FAKE_DIR/beta" 2>/dev/null || true)
 echo "gh $*" >> "$FAKE_DIR/calls"
 case "$1 $2" in
   "--version ") echo "gh version 2.62.0 (2026-01-01)";;
   "auth status") echo "github.com"; echo "  ✓ Logged in to github.com account tester (keyring)";;
   "release list")
     if [[ "$*" == *missing/repo* ]]; then echo "GraphQL: Could not resolve to a Repository with the name 'missing/repo'." >&2; exit 1; fi
-    echo "[{\"tagName\":\"$TAG\"}]";;
+    # Newest first, like gh.
+    printf '['
+    [[ -n "$BETA" ]] && printf '{"tagName":"%s","isPrerelease":true,"publishedAt":"2026-11-22T01:35:04Z"},' "$BETA"
+    printf '{"tagName":"%s","isPrerelease":false,"publishedAt":"2026-11-22T00:04:26Z"}]\n' "$TAG";;
   "release view")
+    if [[ "$3" == *-* ]]; then pre=true; asset=demo-2.flatpak; else pre=false; asset=demo.flatpak; fi
     cat <<JSON
-{"tagName":"$3","name":"Demo $3","publishedAt":"2026-11-15T20:00:00Z","isPrerelease":false,
- "url":"https://github.com/o/demo/releases/tag/$3","body":"## Changes\n- Faster","assets":[
- {"name":"demo-source.tar.gz","size":100},{"name":"demo.flatpak","size":24100000}]}
+{"tagName":"$3","name":"Demo $3","publishedAt":"2026-11-22T00:00:00Z","isPrerelease":$pre,
+ "url":"https://github.com/o/demo/releases/tag/$3","body":"## Changes in $3\n- Faster","assets":[
+ {"name":"demo-source.tar.gz","size":100},{"name":"$asset","size":24100000}]}
 JSON
     ;;
   "release download")
-    dir=""; while [[ $# -gt 0 ]]; do [[ "$1" == --dir ]] && dir="$2"; shift; done
-    echo "bundle" > "$dir/demo.flatpak";;
+    tag="$3"; dir=""; pat=""
+    while [[ $# -gt 0 ]]; do [[ "$1" == --dir ]] && dir="$2"; [[ "$1" == --pattern ]] && pat="$2"; shift; done
+    echo "$tag" > "$dir/$pat";;  # the fake bundle holds its release tag
   *) echo "unknown command" >&2; exit 1;;
 esac

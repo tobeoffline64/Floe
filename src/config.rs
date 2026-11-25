@@ -96,6 +96,8 @@ pub struct Settings {
     pub keep_downloads: bool,
     /// Look for a newer Floe release when Floe opens (and with the periodic checks).
     pub check_self: bool,
+    /// Offer Floe's own pre-releases too.
+    pub self_beta: bool,
 }
 
 impl Default for Settings {
@@ -109,6 +111,7 @@ impl Default for Settings {
             scope: Scope::User,
             keep_downloads: false,
             check_self: true,
+            self_beta: false,
         }
     }
 }
@@ -124,7 +127,12 @@ pub struct TrackedRepo {
     pub asset_pattern: String,
     /// Flatpak application ID; filled in automatically after the first install if empty.
     pub app_id: String,
+    /// Beta channel: also offer pre-releases (betas, release candidates) when they're newer
+    /// than the latest stable release. (Field name kept for existing config files.)
     pub include_prereleases: bool,
+    /// Which asset to install from a pre-release, when betas name their bundle differently;
+    /// empty means the same pattern as stable releases.
+    pub beta_asset_pattern: String,
     /// The release tag Floe last installed.
     pub installed_tag: Option<String>,
     pub installed_at: Option<String>,
@@ -137,7 +145,11 @@ pub struct TrackedRepo {
     pub installed_origin: String,
     /// An installed app whose name matches but that wasn't linked automatically.
     pub suggested_app_id: Option<String>,
+    /// The release to install on this repository's channel (stable, or beta when that's on).
     pub latest: Option<Release>,
+    /// The newest stable release, and the newest pre-release if it's newer than that.
+    pub stable: Option<Release>,
+    pub beta: Option<Release>,
     pub last_checked: Option<String>,
     pub last_error: Option<String>,
 }
@@ -153,6 +165,8 @@ pub enum Status {
     NotInstalled,
     UpdateAvailable,
     UpToDate,
+    /// A beta is installed but the app is on the stable channel (stable is older).
+    OnBeta,
 }
 
 impl Status {
@@ -164,6 +178,7 @@ impl Status {
             Status::NotInstalled => "Not installed",
             Status::UpdateAvailable => "Update available",
             Status::UpToDate => "Up to date",
+            Status::OnBeta => "On beta",
         }
     }
 }
@@ -181,8 +196,40 @@ impl TrackedRepo {
     pub fn pattern(&self) -> &str {
         gh::effective_pattern(&self.asset_pattern)
     }
+    /// The asset pattern for a release: the beta pattern for pre-releases, if one is set.
+    pub fn pattern_for(&self, release: &Release) -> &str {
+        if release.prerelease && !self.beta_asset_pattern.trim().is_empty() {
+            self.beta_asset_pattern.trim()
+        } else {
+            gh::effective_pattern(&self.asset_pattern)
+        }
+    }
     pub fn latest_asset(&self) -> Option<&gh::Asset> {
-        self.latest.as_ref()?.pick_asset(&self.asset_pattern)
+        let latest = self.latest.as_ref()?;
+        latest.pick_asset(self.pattern_for(latest))
+    }
+    pub fn beta_channel(&self) -> bool {
+        self.include_prereleases
+    }
+    /// A beta newer than both stable and what's installed, offered while on the stable channel.
+    pub fn beta_on_offer(&self) -> Option<&Release> {
+        let beta = self.beta.as_ref().filter(|_| !self.include_prereleases)?;
+        match self.compare_installed(&beta.tag) {
+            Some(std::cmp::Ordering::Less) | None => Some(beta),
+            _ => None,
+        }
+    }
+    /// Switch between the stable and beta channel, using the releases from the last check.
+    pub fn set_beta_channel(&mut self, on: bool) {
+        self.include_prereleases = on;
+        self.retarget();
+    }
+    /// Recompute `latest` from `stable`/`beta` for the current channel.
+    pub fn retarget(&mut self) {
+        if self.stable.is_some() || self.beta.is_some() {
+            let ch = gh::Channels { stable: self.stable.clone(), beta: self.beta.clone() };
+            self.latest = ch.pick(self.include_prereleases).cloned();
+        }
     }
     /// Linked to an app that came from a remote like Flathub: updating replaces it with the
     /// GitHub build.
@@ -196,7 +243,30 @@ impl TrackedRepo {
 
     /// What's installed, best source first: the flatpak's own version, else the tag Floe installed.
     pub fn current_version(&self) -> Option<&str> {
-        self.installed_version.as_deref().filter(|v| !v.is_empty()).or(self.installed_tag.as_deref())
+        let meta = self.installed_version.as_deref().filter(|v| !v.is_empty());
+        match (meta, self.installed_tag.as_deref()) {
+            // An app may write "2.0.0" in its metadata for "v2.0.0-beta.1": when the numbers
+            // agree, the tag Floe installed is the more precise of the two.
+            (Some(m), Some(t)) if version::same_core(m, t) => Some(t),
+            (Some(m), _) => Some(m),
+            (None, t) => t,
+        }
+    }
+
+    /// The installed version compared with a tag (`Less` = the tag is newer).
+    fn compare_installed(&self, tag: &str) -> Option<std::cmp::Ordering> {
+        if self.installed_tag.as_deref() == Some(tag) {
+            return Some(std::cmp::Ordering::Equal);
+        }
+        version::compare(self.current_version()?, tag)
+    }
+
+    /// Installed a pre-release that's newer than the stable release, while on the stable channel.
+    pub fn on_beta(&self) -> bool {
+        !self.include_prereleases
+            && self.is_installed()
+            && self.current_version().is_some_and(version::is_prerelease)
+            && self.stable.as_ref().is_some_and(|s| self.compare_installed(&s.tag) == Some(std::cmp::Ordering::Greater))
     }
 
     pub fn status(&self) -> Status {
@@ -210,7 +280,10 @@ impl TrackedRepo {
         if self.installed_tag.as_deref() == Some(latest.tag.as_str()) {
             return Status::UpToDate;
         }
-        let behind = match self.current_version().and_then(|cur| version::compare(cur, &latest.tag)) {
+        if self.on_beta() {
+            return Status::OnBeta;
+        }
+        let behind = match self.compare_installed(&latest.tag) {
             Some(o) => o == std::cmp::Ordering::Less,
             // Not comparable (e.g. "nightly"): anything other than the installed tag is new.
             None => self.installed_tag.as_deref().is_some_and(|t| t != latest.tag),
@@ -407,6 +480,67 @@ mod tests {
         // Newer release without a bundle.
         r.latest.as_mut().unwrap().assets.clear();
         assert_eq!(r.status(), Status::NoAsset);
+    }
+
+    fn pre(tag: &str, asset: &str) -> Release {
+        Release { tag: tag.into(), prerelease: true, assets: vec![Asset { name: asset.into(), size: 10 }], ..Default::default() }
+    }
+
+    /// PenguinFin's releases: stable v1.10.0 (penguinfin.flatpak) and beta v2.0.0-beta.1
+    /// (penguinfin-2.flatpak), same app ID.
+    #[test]
+    fn beta_channel() {
+        let mut r = TrackedRepo {
+            repo: "tobeoffline64/PenguinFin".into(),
+            app_id: "io.github.tobeoffline64.PenguinFin".into(),
+            app_present: true,
+            installed_version: Some("1.10.0".into()),
+            stable: Some(Release { tag: "v1.10.0".into(), assets: vec![Asset { name: "penguinfin.flatpak".into(), size: 1 }], ..Default::default() }),
+            beta: Some(pre("v2.0.0-beta.1", "penguinfin-2.flatpak")),
+            ..Default::default()
+        };
+        r.retarget();
+        // Stable channel: up to date, with the beta on offer.
+        assert_eq!(r.latest.as_ref().unwrap().tag, "v1.10.0");
+        assert_eq!(r.status(), Status::UpToDate);
+        assert_eq!(r.beta_on_offer().unwrap().tag, "v2.0.0-beta.1");
+
+        // Switch to beta: the beta is the update.
+        r.set_beta_channel(true);
+        assert_eq!(r.status(), Status::UpdateAvailable);
+        assert_eq!(r.latest_asset().unwrap().name, "penguinfin-2.flatpak");
+        assert!(r.beta_on_offer().is_none());
+
+        // Installed the beta (metadata says "2.0.0~beta.1"): up to date on beta.
+        r.installed_tag = Some("v2.0.0-beta.1".into());
+        r.installed_version = Some("2.0.0~beta.1".into());
+        assert_eq!(r.status(), Status::UpToDate);
+        // Beta 2 arrives.
+        r.beta = Some(pre("v2.0.0-beta.2", "penguinfin-2.flatpak"));
+        r.retarget();
+        assert_eq!(r.status(), Status::UpdateAvailable);
+        // Metadata without the beta suffix still compares by the installed tag.
+        r.installed_version = Some("2.0.0".into());
+        assert_eq!(r.status(), Status::UpdateAvailable);
+        r.installed_version = Some("2.0.0~beta.1".into());
+
+        // Back to stable while the beta is installed: "On beta", not "up to date".
+        r.set_beta_channel(false);
+        assert_eq!(r.status(), Status::OnBeta);
+        // A newer beta is still mentioned (not installed automatically) on the stable channel.
+        assert_eq!(r.beta_on_offer().unwrap().tag, "v2.0.0-beta.2");
+
+        // 2.0.0 ships: betas drop out, stable channel offers the update.
+        r.stable = Some(Release { tag: "v2.0.0".into(), assets: vec![Asset { name: "penguinfin.flatpak".into(), size: 1 }], ..Default::default() });
+        r.beta = None;
+        r.retarget();
+        assert_eq!(r.status(), Status::UpdateAvailable);
+
+        // A beta pattern only applies to pre-releases.
+        r.asset_pattern = "penguinfin.flatpak".into();
+        r.beta_asset_pattern = "penguinfin-2*.flatpak".into();
+        assert_eq!(r.pattern_for(r.stable.as_ref().unwrap()), "penguinfin.flatpak");
+        assert_eq!(r.pattern_for(&pre("v2.1.0-beta.1", "x")), "penguinfin-2*.flatpak");
     }
 
     #[test]

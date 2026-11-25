@@ -16,7 +16,19 @@ Built in **Rust** with **[Dioxus](https://dioxuslabs.com) desktop** and the
 
 - **Repository list**: add `owner/name` or paste a GitHub link. Optional per repository: which
   release file to install (glob, default `*.flatpak`; an asset built for your CPU architecture
-  is preferred when several match), the flatpak app ID, and whether to include pre-releases.
+  is preferred when several match), the flatpak app ID, and the update channel.
+- **Stable or beta, per app**: every app card has an *Updates: Stable | Beta* switch.
+  - **Stable** installs only regular releases. When the repository has a newer
+    pre-release (a GitHub release marked *pre-release*, such as `v2.0.0-beta.1`), the card
+    says so, with its notes and a **Switch to beta** button.
+  - **Beta** installs whichever is newer: the latest pre-release or the latest stable
+    release. Once `v2.0.0` is out, its betas no longer count.
+  - Switching back to **Stable** while a beta is installed shows *On beta*, with **Stay on
+    beta** or **Return to stable** (a confirmed downgrade; read the beta's notes about your
+    data first).
+  - If betas name their bundle differently (PenguinFin 2 betas ship `penguinfin-2.flatpak`),
+    `*.flatpak` matches both; otherwise set *Beta release file* under Edit.
+  - Floe's own updates have a separate *Floe beta updates* switch in Settings.
 - **Checks**: one repository or all of them at once (in parallel, `Ctrl R`), automatically
   when Floe opens and every 1–24 hours while it's open, with a desktop notification for new
   releases.

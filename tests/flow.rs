@@ -119,6 +119,35 @@ fn check_install_and_update() {
     assert_eq!(res.err().as_deref(), Some("Cancelled."));
     assert!(started.elapsed().as_secs() < 3, "cancel stops the process promptly");
 
+    // Beta channel, modelled on PenguinFin: stable v1.10.0, beta v2.0.0-beta.1 with its own
+    // bundle name, same app ID.
+    std::fs::write(dir.path().join("slow"), "0").unwrap();
+    std::fs::write(dir.path().join("tag"), "v1.10.0").unwrap();
+    std::fs::write(dir.path().join("installed"), "1.10.0").unwrap();
+    std::fs::write(dir.path().join("beta"), "v2.0.0-beta.1").unwrap();
+    let mut cfg3 = Config::default();
+    let p = cfg3.add("o/demo", "", "io.github.o.Demo", false).unwrap();
+    let c = updater::check(cfg3.repo(p).unwrap());
+    updater::apply_check(cfg3.repo_mut(p).unwrap(), c);
+    let r = cfg3.repo(p).unwrap();
+    assert_eq!(r.status(), Status::UpToDate, "stable channel ignores the beta");
+    assert_eq!(r.beta_on_offer().map(|b| b.tag.as_str()), Some("v2.0.0-beta.1"));
+    // Switch to beta and install it.
+    cfg3.repo_mut(p).unwrap().set_beta_channel(true);
+    assert_eq!(cfg3.repo(p).unwrap().status(), Status::UpdateAvailable);
+    let (release, bundle) = updater::download(cfg3.repo(p).unwrap(), &Handle::detached()).unwrap();
+    assert_eq!(bundle.file_name().unwrap(), "demo-2.flatpak");
+    let done = updater::install(cfg3.repo(p).unwrap(), &bundle, &settings, &Handle::detached()).unwrap();
+    updater::apply_install(cfg3.repo_mut(p).unwrap(), &release, done);
+    assert_eq!(cfg3.repo(p).unwrap().installed_version.as_deref(), Some("2.0.0-beta.1"));
+    assert_eq!(cfg3.repo(p).unwrap().status(), Status::UpToDate);
+    // Back to stable: "On beta"; returning installs the stable bundle again.
+    cfg3.repo_mut(p).unwrap().set_beta_channel(false);
+    assert_eq!(cfg3.repo(p).unwrap().status(), Status::OnBeta);
+    let (release, bundle) = updater::download(cfg3.repo(p).unwrap(), &Handle::detached()).unwrap();
+    assert_eq!((release.tag.as_str(), bundle.file_name().unwrap().to_str().unwrap()), ("v1.10.0", "demo.flatpak"));
+    std::fs::write(dir.path().join("beta"), "").unwrap();
+
     let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
     assert!(calls.contains("gh release download v1.2.0 --repo o/demo --pattern demo.flatpak"), "{calls}");
     assert!(calls.contains("flatpak install --user -y --noninteractive --reinstall"), "{calls}");

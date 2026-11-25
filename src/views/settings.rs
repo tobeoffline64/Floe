@@ -233,6 +233,7 @@ fn SelfUpdateCard() -> Element {
     let mut store = use_store();
     let su = store.self_update.read().clone();
     let check_self = store.cfg.read().settings.check_self;
+    let self_beta = store.cfg.read().settings.self_beta;
     let mut notes = use_signal(|| false);
     let sandboxed = host::in_flatpak();
     let current = app::SelfUpdate::current();
@@ -324,6 +325,13 @@ fn SelfUpdateCard() -> Element {
                     crate::views::apps::ConsolePanel { id: app::SELF_ID, busy: su.busy }
                 }
 
+                Separator {}
+                SettingRow { title: "Floe beta updates", hint: "Also offer Floe's own pre-releases. Turning this off doesn't downgrade an installed beta; you get the next stable release once it's newer.",
+                    Switch { checked: self_beta, aria_label: "Floe beta updates",
+                        onchange: move |v| {
+                            store.update(|c| c.settings.self_beta = v);
+                            spawn_forever(app::check_self(store, false));
+                        } } }
                 Separator {}
                 SettingRow { title: "Check for Floe updates automatically", hint: "When Floe opens and with the scheduled checks; notifies you if a new version is out.",
                     Switch { checked: check_self, aria_label: "Check for Floe updates automatically",

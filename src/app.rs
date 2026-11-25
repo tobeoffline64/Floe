@@ -710,7 +710,8 @@ pub async fn check_self(mut store: Store, manual: bool) {
         return;
     }
     store.self_update.write().busy = Some(Busy::Checking);
-    let result = off_thread(|| gh::latest_release(host::FLOE_REPO, false)).await;
+    let beta = store.cfg.peek().settings.self_beta;
+    let result = off_thread(move || gh::latest_release(host::FLOE_REPO, beta)).await;
     let notify_new = {
         let mut su = store.self_update.write();
         su.busy = None;

@@ -150,10 +150,10 @@ fn AddRepoCard(on_done: EventHandler<()>) -> Element {
                         Input { placeholder: "io.github.owner.App", value: app_id(),
                             oninput: move |e: FormEvent| app_id.set(e.value()) } }
                     div { class: "flex items-center gap-3 @2xl:pt-6",
-                        Switch { checked: pre(), aria_label: "Include pre-releases", onchange: move |v| pre.set(v) }
+                        Switch { checked: pre(), aria_label: "Beta updates", onchange: move |v| pre.set(v) }
                         div {
-                            div { class: "text-sm font-medium", "Include pre-releases" }
-                            div { class: "text-xs text-muted-foreground", "Betas and release candidates" }
+                            div { class: "text-sm font-medium", "Beta updates" }
+                            div { class: "text-xs text-muted-foreground", "Also offer pre-releases (betas, release candidates) when they're newer than the stable release. You can switch any time." }
                         }
                     }
                 }
@@ -175,6 +175,7 @@ fn status_badge(s: Status) -> BadgeVariant {
         Status::UpToDate => BadgeVariant::Success,
         Status::Error | Status::NoAsset => BadgeVariant::Warning,
         Status::NotInstalled | Status::Unknown => BadgeVariant::Muted,
+        Status::OnBeta => BadgeVariant::Accent,
     }
 }
 
@@ -185,6 +186,8 @@ fn RepoCard(id: u64) -> Element {
     let busy = store.busy(id);
     let status = r.status();
     let mut notes = use_signal(|| false);
+    let mut beta_notes = use_signal(|| false);
+    let mut confirm_downgrade = use_signal(|| false);
     let mut editing = use_signal(|| false);
     let mut confirm_remove = use_signal(|| false);
     // None = automatic: open while downloading/installing.
@@ -199,10 +202,33 @@ fn RepoCard(id: u64) -> Element {
     let current = r.current_version().map(str::to_string);
     let has_app = !r.app_id.is_empty() && r.app_present;
 
-    let primary = match status {
-        Status::UpdateAvailable => Some(format!("Update to {}", latest.as_ref().map(|l| l.tag.as_str()).unwrap_or(""))),
-        Status::NotInstalled => Some("Install".to_string()),
+    let target_is_beta = latest.as_ref().is_some_and(|l| l.prerelease);
+    let target_tag = latest.as_ref().map(|l| l.tag.clone()).unwrap_or_default();
+    let primary = match (status, target_is_beta) {
+        (Status::UpdateAvailable, true) if r.current_version().is_some_and(floe::version::is_prerelease) => Some(format!("Update to {target_tag}")),
+        (Status::UpdateAvailable | Status::NotInstalled, true) => Some(format!("Install beta {target_tag}")),
+        (Status::UpdateAvailable, false) => Some(format!("Update to {target_tag}")),
+        (Status::NotInstalled, false) => Some("Install".to_string()),
         _ => None,
+    };
+    let beta_offer = r.beta_on_offer().cloned();
+    let stable_tag = r.stable.as_ref().map(|s| s.tag.clone());
+    let beta_channel = r.beta_channel();
+    let set_channel = move |on: bool| {
+        let mut store = store;
+        let mut never_checked = false;
+        let mut name = String::new();
+        store.update(|c| {
+            if let Some(r) = c.repo_mut(id) {
+                r.set_beta_channel(on);
+                never_checked = r.stable.is_none() && r.beta.is_none();
+                name = r.repo.clone();
+            }
+        });
+        store.log(&name, if on { "Switched to the beta channel" } else { "Switched to the stable channel" }, false, "");
+        if never_checked {
+            spawn_forever(app::check_repo(store, id));
+        }
     };
 
     rsx! {
@@ -215,8 +241,8 @@ fn RepoCard(id: u64) -> Element {
                         div { class: "flex flex-wrap items-center gap-2",
                             span { class: "truncate text-base font-semibold", "{r.name()}" }
                             span { class: "truncate text-sm text-muted-foreground", "{r.owner()}" }
-                            if r.include_prereleases {
-                                Badge { variant: BadgeVariant::Outline, size: BadgeSize::Sm, "pre-releases" }
+                            if beta_channel {
+                                Badge { variant: BadgeVariant::Warning, size: BadgeSize::Sm, "beta channel" }
                             }
                         }
                         div { class: "truncate text-xs text-muted-foreground",
@@ -242,14 +268,12 @@ fn RepoCard(id: u64) -> Element {
                         }
                     }
                     div {
-                        span { class: "text-muted-foreground", "Latest: " }
                         if let Some(l) = &latest {
+                            span { class: "text-muted-foreground", if l.prerelease { "Latest beta: " } else { "Latest: " } }
                             span { class: "font-medium", "{l.tag}" }
                             span { class: "text-muted-foreground", " · {l.date()}" }
-                            if l.prerelease {
-                                span { class: "text-warning-dark", " · pre-release" }
-                            }
                         } else {
+                            span { class: "text-muted-foreground", "Latest: " }
                             span { class: "text-muted-foreground", "not checked yet" }
                         }
                     }
@@ -264,6 +288,89 @@ fn RepoCard(id: u64) -> Element {
                             span { class: "text-muted-foreground", "{r.pattern()}" }
                         }
                     }
+                }
+
+                div { class: "flex flex-wrap items-center gap-2 text-sm",
+                    span { class: "text-muted-foreground", "Updates:" }
+                    div { class: "inline-flex rounded-lg bg-muted p-0.5", role: "radiogroup", aria_label: "Release channel",
+                        for (on, label, tip) in [(false, "Stable", "Only stable releases"), (true, "Beta", "Stable releases and newer betas / release candidates")] {
+                            button {
+                                key: "{label}",
+                                role: "radio",
+                                aria_checked: "{beta_channel == on}",
+                                title: tip,
+                                disabled: busy.is_some(),
+                                class: if beta_channel == on {
+                                    "rounded-md bg-background px-2.5 py-0.5 text-xs font-medium shadow-sm"
+                                } else {
+                                    "rounded-md px-2.5 py-0.5 text-xs text-muted-foreground hover:text-foreground cursor-pointer disabled:cursor-default"
+                                },
+                                onclick: move |_| if beta_channel != on { set_channel(on) },
+                                "{label}"
+                            }
+                        }
+                    }
+                    if beta_channel {
+                        if let (Some(st), true) = (&r.stable, target_is_beta) {
+                            span { class: "text-xs text-muted-foreground", "Stable is {st.tag}" }
+                        }
+                    }
+                }
+
+                if let Some(b) = &beta_offer {
+                    if status != Status::OnBeta {
+                        div { class: "flex flex-wrap items-center gap-2 rounded-md bg-warning-light px-3 py-2 text-xs text-warning-dark",
+                            Icon { name: IconName::Notes, class: "size-3.5 shrink-0" }
+                            span { class: "min-w-0 flex-1",
+                                "Beta {b.tag} ({b.date()}) is available. Betas can have bugs and may upgrade your data in ways older versions can't read, so read the notes first." }
+                            if !b.body.trim().is_empty() {
+                                Button { size: ButtonSize::Sm, variant: ButtonVariant::Ghost, onclick: move |_| beta_notes.toggle(),
+                                    if beta_notes() { "Hide notes" } else { "Beta notes" } }
+                            }
+                            Button { size: ButtonSize::Sm, variant: ButtonVariant::Outline, disabled: busy.is_some(),
+                                onclick: move |_| set_channel(true), "Switch to beta" }
+                        }
+                    }
+                }
+
+                if status == Status::OnBeta {
+                    div { class: "flex flex-col gap-2 rounded-md bg-accent px-3 py-2 text-xs",
+                        span {
+                            "You're running beta {current.clone().unwrap_or_default()} on the stable channel, so Floe won't install betas for this app. "
+                            "Switch back to Beta to keep getting beta updates"
+                            if let Some(st) = &stable_tag { ", or return to stable {st}" }
+                            "."
+                        }
+                        if confirm_downgrade() {
+                            div { class: "flex flex-col gap-2 rounded-md border border-destructive bg-background p-2",
+                                span { class: "text-destructive",
+                                    "Going back reinstalls the older stable version. If the beta upgraded the app's data, the older version may refuse to open it until you restore a backup: check the beta's release notes for how to go back. Your data folder in ~/.var/app is not touched by Floe." }
+                                div { class: "flex flex-wrap gap-2",
+                                    Button { size: ButtonSize::Sm, variant: ButtonVariant::Destructive, disabled: busy.is_some(),
+                                        onclick: move |_| {
+                                            confirm_downgrade.set(false);
+                                            spawn_forever(async move { app::update_repo(store, id).await; });
+                                        },
+                                        "Yes, install {stable_tag.clone().unwrap_or_default()}" }
+                                    Button { size: ButtonSize::Sm, variant: ButtonVariant::Ghost, onclick: move |_| confirm_downgrade.set(false), "Cancel" }
+                                }
+                            }
+                        } else {
+                            div { class: "flex flex-wrap gap-2",
+                                Button { size: ButtonSize::Sm, variant: ButtonVariant::Outline, disabled: busy.is_some(),
+                                    onclick: move |_| set_channel(true), "Stay on beta" }
+                                if let Some(st) = &stable_tag {
+                                    Button { size: ButtonSize::Sm, variant: ButtonVariant::Ghost, disabled: busy.is_some(),
+                                        onclick: move |_| confirm_downgrade.set(true), "Return to stable {st}…" }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if target_is_beta && matches!(status, Status::UpdateAvailable | Status::NotInstalled) {
+                    p { class: "text-xs text-warning-dark",
+                        "{target_tag} is a pre-release. Read its release notes before installing, and back up the app's data if they say so." }
                 }
 
                 if let (Some(sug), true) = (&r.suggested_app_id, r.app_id.is_empty()) {
@@ -368,6 +475,15 @@ fn RepoCard(id: u64) -> Element {
                         "Removes it from Floe's list only. To uninstall the app itself: flatpak uninstall {r.app_id}" }
                 }
 
+                if beta_notes() {
+                    if let Some(b) = &beta_offer {
+                        div { class: "max-h-80 overflow-y-auto rounded-md border bg-muted p-3",
+                            div { class: "mb-2 text-sm font-semibold", if b.name.is_empty() { "{b.tag}" } else { "{b.name}" } }
+                            pre { class: "whitespace-pre-wrap break-words font-sans text-sm text-foreground", "{b.body.trim()}" }
+                        }
+                    }
+                }
+
                 if notes() {
                     if let Some(l) = &latest {
                         div { class: "max-h-80 overflow-y-auto rounded-md border bg-muted p-3",
@@ -403,6 +519,7 @@ fn EditRepo(repo: TrackedRepo, on_done: EventHandler<()>) -> Element {
     let mut pattern = use_signal(|| repo.asset_pattern.clone());
     let mut app_id = use_signal(|| repo.app_id.clone());
     let mut pre = use_signal(|| repo.include_prereleases);
+    let mut beta_pattern = use_signal(|| repo.beta_asset_pattern.clone());
     let mut error = use_signal(|| None::<String>);
 
     let save = move |_| {
@@ -424,7 +541,8 @@ fn EditRepo(repo: TrackedRepo, on_done: EventHandler<()>) -> Element {
                     r.installed_version = None;
                 }
                 r.app_id = a;
-                r.include_prereleases = pre_v;
+                r.beta_asset_pattern = beta_pattern.read().trim().to_string();
+                r.set_beta_channel(pre_v);
             }
         });
         on_done.call(());
@@ -440,10 +558,15 @@ fn EditRepo(repo: TrackedRepo, on_done: EventHandler<()>) -> Element {
                     Input { placeholder: gh::DEFAULT_PATTERN, value: pattern(), oninput: move |e: FormEvent| pattern.set(e.value()) } }
                 Field { label: "Flatpak app ID", hint: "Used to read the installed version and to open the app.",
                     Input { placeholder: "io.github.owner.App", value: app_id(), oninput: move |e: FormEvent| app_id.set(e.value()) } }
+                Field { label: "Beta release file (optional)", hint: "Only if betas name their bundle differently. Default: same as above.",
+                    Input { placeholder: "e.g. *-beta*.flatpak", value: beta_pattern(), oninput: move |e: FormEvent| beta_pattern.set(e.value()) } }
             }
             div { class: "flex items-center gap-3",
-                Switch { checked: pre(), aria_label: "Include pre-releases", onchange: move |v| pre.set(v) }
-                span { class: "text-sm", "Include pre-releases" }
+                Switch { checked: pre(), aria_label: "Beta updates", onchange: move |v| pre.set(v) }
+                div {
+                    div { class: "text-sm", "Beta updates" }
+                    div { class: "text-xs text-muted-foreground", "Also offer pre-releases when they're newer than the stable release." }
+                }
             }
             if let Some(e) = error() {
                 p { class: "text-sm text-destructive", "{e}" }

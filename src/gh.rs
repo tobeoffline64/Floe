@@ -3,6 +3,7 @@
 
 use crate::console::Handle;
 use crate::host;
+use crate::version;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use serde::{Deserialize, Serialize};
@@ -169,28 +170,74 @@ fn friendly_error(out: &host::Output) -> String {
 
 const RELEASE_FIELDS: &str = "tagName,name,publishedAt,isPrerelease,url,body,assets";
 
-/// The newest published (non-draft) release, optionally including pre-releases.
-pub fn latest_release(repo: &str, include_prereleases: bool) -> Result<Release, String> {
-    #[derive(Deserialize)]
-    struct Item {
-        #[serde(rename = "tagName")]
-        tag: String,
+/// The newest stable release and the newest pre-release ("beta") of a repository. `beta` is
+/// only set when it's newer than `stable`: once 2.0.0 is out, its betas no longer count.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Channels {
+    pub stable: Option<Release>,
+    pub beta: Option<Release>,
+}
+
+impl Channels {
+    /// What to install on the stable or the beta channel.
+    pub fn pick(&self, beta: bool) -> Option<&Release> {
+        if beta { self.beta.as_ref().or(self.stable.as_ref()) } else { self.stable.as_ref() }
     }
-    let mut args = vec!["release", "list", "--repo", repo, "--limit", "1", "--exclude-drafts", "--json", "tagName"];
-    if !include_prereleases {
-        args.push("--exclude-pre-releases");
+
+    /// Same as [`Channels::pick`], with a message when nothing fits.
+    pub fn pick_or_err(&self, beta: bool) -> Result<Release, String> {
+        self.pick(beta).cloned().ok_or_else(|| {
+            if self.beta.is_some() {
+                "Only beta releases so far. Switch this app to the beta channel to install one.".into()
+            } else {
+                "This repository has no releases yet.".into()
+            }
+        })
     }
-    let out = gh(&args)?;
-    let items: Vec<Item> =
+}
+
+#[derive(Deserialize)]
+struct ListItem {
+    #[serde(rename = "tagName")]
+    tag: String,
+    #[serde(rename = "isPrerelease", default)]
+    prerelease: bool,
+    #[serde(rename = "publishedAt", default)]
+    published_at: String,
+}
+
+/// Pick the newest stable and newest pre-release tags from `gh release list` output (newest
+/// first). The beta is dropped when it isn't newer than the stable release.
+fn split_channels(items: &[ListItem]) -> (Option<&ListItem>, Option<&ListItem>) {
+    let stable = items.iter().find(|i| !i.prerelease);
+    let beta = items.iter().find(|i| i.prerelease).filter(|b| match stable {
+        None => true,
+        Some(s) => match version::compare(&b.tag, &s.tag) {
+            Some(o) => o == std::cmp::Ordering::Greater,
+            None => b.published_at > s.published_at,
+        },
+    });
+    (stable, beta)
+}
+
+/// Read both release channels of a repository.
+pub fn channels(repo: &str) -> Result<Channels, String> {
+    let out = gh(&["release", "list", "--repo", repo, "--limit", "30", "--exclude-drafts", "--json", "tagName,isPrerelease,publishedAt"])?;
+    let items: Vec<ListItem> =
         serde_json::from_str(out.stdout.trim()).map_err(|e| format!("Unexpected output from gh release list: {e}"))?;
-    let Some(item) = items.into_iter().next() else {
-        return Err(if include_prereleases {
-            "This repository has no releases yet.".into()
-        } else {
-            "No stable releases yet (turn on pre-releases to include them).".into()
-        });
-    };
-    release(repo, &item.tag)
+    if items.is_empty() {
+        return Err("This repository has no releases yet.".into());
+    }
+    let (stable, beta) = split_channels(&items);
+    Ok(Channels {
+        stable: stable.map(|i| release(repo, &i.tag)).transpose()?,
+        beta: beta.map(|i| release(repo, &i.tag)).transpose()?,
+    })
+}
+
+/// The release to install on one channel.
+pub fn latest_release(repo: &str, include_prereleases: bool) -> Result<Release, String> {
+    channels(repo)?.pick_or_err(include_prereleases)
 }
 
 pub fn release(repo: &str, tag: &str) -> Result<Release, String> {
@@ -331,6 +378,27 @@ mod tests {
         assert_eq!(r.tag, "v1.3.0");
         assert_eq!(r.date(), "2026-11-15");
         assert_eq!(r.assets[0].size, 123);
+    }
+
+    #[test]
+    fn splits_channels() {
+        let item = |tag: &str, pre: bool, at: &str| ListItem { tag: tag.into(), prerelease: pre, published_at: at.into() };
+        // PenguinFin today: a 2.0 beta newer than stable 1.10.
+        let items = [item("v2.0.0-beta.1", true, "2026-11-22T01"), item("v1.10.0", false, "2026-11-22T00"), item("v1.9.0", false, "2026-11-16")];
+        let (s, b) = split_channels(&items);
+        assert_eq!((s.unwrap().tag.as_str(), b.unwrap().tag.as_str()), ("v1.10.0", "v2.0.0-beta.1"));
+        // After 2.0.0 ships, its betas no longer count.
+        let items = [item("v2.0.0", false, "2026-12-10"), item("v2.0.0-rc.1", true, "2026-12-01"), item("v1.10.0", false, "2026-11-22")];
+        let (s, b) = split_channels(&items);
+        assert_eq!((s.unwrap().tag.as_str(), b.map(|b| b.tag.as_str())), ("v2.0.0", None));
+        // Only betas so far.
+        let items = [item("v0.1.0-alpha", true, "2026-11-01")];
+        let (s, b) = split_channels(&items);
+        assert!(s.is_none() && b.is_some());
+        let ch = Channels { stable: None, beta: Some(Release { tag: "v0.1.0-alpha".into(), ..Default::default() }) };
+        assert!(ch.pick(false).is_none());
+        assert!(ch.pick_or_err(false).unwrap_err().contains("beta channel"));
+        assert_eq!(ch.pick(true).unwrap().tag, "v0.1.0-alpha");
     }
 
     #[test]

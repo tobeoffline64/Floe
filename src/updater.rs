@@ -10,13 +10,14 @@ use std::path::PathBuf;
 /// The outcome of a check, applied with [`apply_check`].
 #[derive(Clone, Debug)]
 pub struct Check {
-    pub latest: Result<gh::Release, String>,
+    /// The newest stable release and newer beta, if any.
+    pub channels: Result<gh::Channels, String>,
     /// What `flatpak list` shows on this computer.
     pub installed: Vec<InstalledApp>,
 }
 
 pub fn check(repo: &TrackedRepo) -> Check {
-    Check { latest: gh::latest_release(&repo.repo, repo.include_prereleases), installed: flatpak::installed_list() }
+    Check { channels: gh::channels(&repo.repo), installed: flatpak::installed_list() }
 }
 
 pub fn now() -> String {
@@ -73,10 +74,13 @@ pub fn apply_check(repo: &mut TrackedRepo, c: Check) -> Option<String> {
         let app = c.installed.iter().find(|a| a.id == repo.app_id);
         sync_installed(repo, app);
     }
-    match c.latest {
-        Ok(r) => {
-            repo.latest = Some(r);
-            repo.last_error = None;
+    match c.channels {
+        Ok(ch) => {
+            repo.last_error = ch.pick_or_err(repo.include_prereleases).err();
+            repo.stable = ch.stable;
+            repo.beta = ch.beta;
+            repo.latest = None;
+            repo.retarget();
         }
         Err(e) => repo.last_error = Some(e),
     }
@@ -92,12 +96,13 @@ pub fn download(repo: &TrackedRepo, job: &Handle) -> Result<(gh::Release, PathBu
             gh::latest_release(&repo.repo, repo.include_prereleases)?
         }
     };
-    let asset = release.pick_asset(&repo.asset_pattern).ok_or_else(|| {
+    let pattern = repo.pattern_for(&release).to_string();
+    let asset = release.pick_asset(&pattern).ok_or_else(|| {
         let names: Vec<&str> = release.assets.iter().map(|a| a.name.as_str()).collect();
         format!(
             "Release {} has no file matching \"{}\" (files: {}).",
             release.tag,
-            repo.pattern(),
+            pattern,
             if names.is_empty() { "none".to_string() } else { names.join(", ") }
         )
     })?;

@@ -63,6 +63,22 @@ fn compare_pre(a: &str, b: &str) -> Ordering {
     xa.len().cmp(&xb.len())
 }
 
+/// Whether a version/tag is a pre-release ("2.0.0-beta.1", "2.0.0~rc1").
+pub fn is_prerelease(v: &str) -> bool {
+    parse(v).is_some_and(|(_, pre)| pre.is_some())
+}
+
+/// Same numeric part ("2.0.0" and "v2.0.0-beta.1"), ignoring any pre-release suffix.
+pub fn same_core(a: &str, b: &str) -> bool {
+    match (parse(a), parse(b)) {
+        (Some((x, _)), Some((y, _))) => {
+            let len = x.len().max(y.len());
+            (0..len).all(|i| x.get(i).copied().unwrap_or(0) == y.get(i).copied().unwrap_or(0))
+        }
+        _ => false,
+    }
+}
+
 /// Same version, ignoring a "v" prefix and trailing ".0"s.
 pub fn same(a: &str, b: &str) -> bool {
     match compare(a, b) {
@@ -89,5 +105,12 @@ mod tests {
         assert!(same("V2.0", "2.0.0"));
         assert!(same("nightly", "nightly"));
         assert!(!same("1.0", "1.1"));
+        // flatpak metainfo writes betas as "2.0.0~beta.1"; the tag is "v2.0.0-beta.1".
+        assert!(same("2.0.0~beta.1", "v2.0.0-beta.1"));
+        assert_eq!(compare("2.0.0~beta.1", "v2.0.0"), Some(Less));
+        assert_eq!(compare("v2.0.0-beta.1", "v1.10.0"), Some(Greater));
+        assert!(is_prerelease("v2.0.0-beta.1") && is_prerelease("2.0.0~rc1"));
+        assert!(!is_prerelease("v1.10.0") && !is_prerelease("nightly"));
+        assert!(same_core("2.0.0", "v2.0.0-beta.1") && !same_core("2.0.1", "v2.0.0-beta.1"));
     }
 }
