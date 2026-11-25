@@ -1,11 +1,12 @@
-Floe 0.4.0
+Floe 0.4.1
 
-**Beta updates.** Every app card now has an *Updates: Stable | Beta* switch.
+- **Fix: installing for all users (`--system`) failed** with *"Flatpak system operation InstallBundle not allowed for user"*. Installing a bundle system-wide needs your administrator password, and Floe had told flatpak not to ask (`--noninteractive`). Floe now lets flatpak show the password prompt for system-wide installs; per-user installs are unchanged and need no password.
+- If the password prompt is cancelled or can't be shown, the error explains why and gives the command to run in a terminal, and the downloaded bundle is kept for that.
+- If Floe itself is installed for all users, a failed self-update also explains how to switch Floe to a per-user install, so later updates need no password.
 
-- **Stable** (the default) installs regular releases only. When a newer beta exists (a GitHub release marked as a pre-release, like PenguinFin's `v2.0.0-beta.1`), the card tells you, with the beta's notes and a **Switch to beta** button.
-- **Beta** installs the newest of the latest beta and the latest stable release, so once a final version ships you move onto it automatically.
-- Switching back to **Stable** while a beta is installed shows *On beta*, with **Stay on beta** or **Return to stable** (a confirmed downgrade; check the beta's notes about your data first).
-- Betas that name their bundle differently work out of the box with `*.flatpak`; otherwise set *Beta release file* under Edit.
-- **Settings → Floe updates → Floe beta updates** does the same for Floe itself.
+**Updating from 0.4.0 when Floe is installed for all users:** 0.4.0 can't install this fix itself (that's the bug). Update once from a terminal:
 
-Update from **Settings → Floe updates**.
+```bash
+gh release download v0.4.1 --repo tobeoffline64/Floe --pattern floe.flatpak --dir /tmp --clobber
+flatpak install --system -y --reinstall /tmp/floe.flatpak
+```

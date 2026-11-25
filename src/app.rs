@@ -787,6 +787,17 @@ pub async fn update_self(mut store: Store) {
             store.log("Floe", "Floe update cancelled", false, console::text(SELF_ID));
         }
         Err(e) => {
+            let e = if e.contains("administrator password") {
+                format!(
+                    "{e}\nFloe is installed for all users, so each update asks for that password. To update without one, \
+                     switch Floe to a per-user install once, from a terminal (your list and settings are kept):\n\
+                     flatpak uninstall --system {id}\nflatpak install --user {}",
+                    floe::flatpak::shell_quote(console::text(SELF_ID).lines().find_map(|l| l.strip_prefix("Saved ")).unwrap_or("floe.flatpak")),
+                    id = host::FLOE_APP_ID
+                )
+            } else {
+                e
+            };
             store.self_update.write().error = Some(e.clone());
             store.log("Floe", e.lines().next().unwrap_or(&e).to_string(), true, format!("{e}\n\n--- console ---\n{}", console::text(SELF_ID)));
             store.notify(format!("Floe update: {e}"), true);

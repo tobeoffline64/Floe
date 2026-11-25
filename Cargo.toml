@@ -1,6 +1,6 @@
 [package]
 name = "floe"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "Install and update flatpak bundles straight from GitHub releases, using the GitHub CLI"
 license = "MIT"

@@ -181,7 +181,7 @@ fn parse_info_version(info: &str) -> Option<String> {
 /// output to `job`. App data in `~/.var/app/<id>` is kept. Returns the output for the log.
 pub fn install_bundle(path: &Path, scope: Scope, job: &Handle) -> Result<String, String> {
     let p = path.to_string_lossy().into_owned();
-    let out = host::run_streaming("flatpak", &["install", scope.flag(), "-y", "--noninteractive", "--reinstall", &p], job)?;
+    let out = host::run_streaming("flatpak", &install_args(scope, &p), job)?;
     if out.ok {
         return Ok(out.text());
     }
@@ -197,11 +197,36 @@ pub fn install_bundle(path: &Path, scope: Scope, job: &Handle) -> Result<String,
             out.summary(),
             scope.flag()
         )
-    } else if lower.contains("polkit") || lower.contains("not allowed") || lower.contains("authoriz") {
-        format!("{}\nSystem-wide installs need an admin password prompt (polkit). Choose \"Just me\" in Settings to install without one.", out.summary())
+    } else if lower.contains("not allowed for user") || lower.contains("polkit") || lower.contains("authoriz") {
+        format!(
+            "{}\nInstalling a bundle for all users needs an administrator password, and no password prompt was shown or it was cancelled. \
+             Try again and enter your password when asked, or install it from a terminal:\nflatpak install --system --reinstall {}",
+            out.summary(),
+            shell_quote(&p)
+        )
     } else {
         out.summary()
     })
+}
+
+/// `flatpak install` arguments. A system-wide bundle install always needs an administrator
+/// password (polkit `install-bundle`), and `--noninteractive` makes flatpak refuse instead of
+/// asking ("not allowed for user"), so it's only used for per-user installs. `-y` still
+/// answers flatpak's own questions either way.
+pub fn install_args(scope: Scope, path: &str) -> Vec<&str> {
+    match scope {
+        Scope::User => vec!["install", "--user", "-y", "--noninteractive", "--reinstall", path],
+        Scope::System => vec!["install", "--system", "-y", "--reinstall", path],
+    }
+}
+
+/// Quote a path for a command the user can paste into a terminal.
+pub fn shell_quote(s: &str) -> String {
+    if s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+:@".contains(c)) {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
 }
 
 /// Start an installed app.
@@ -248,6 +273,15 @@ pub fn detect_app_id(before: &[String], after: &[String], install_output: &str, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_arguments() {
+        assert_eq!(install_args(Scope::User, "/a.flatpak"), ["install", "--user", "-y", "--noninteractive", "--reinstall", "/a.flatpak"]);
+        // System installs must be allowed to show the polkit password prompt.
+        assert!(!install_args(Scope::System, "/a.flatpak").contains(&"--noninteractive"));
+        assert_eq!(shell_quote("/home/me/x.flatpak"), "/home/me/x.flatpak");
+        assert_eq!(shell_quote("/home/me/my app's.flatpak"), "'/home/me/my app'\\''s.flatpak'");
+    }
 
     #[test]
     fn app_ids() {

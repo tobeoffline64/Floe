@@ -123,7 +123,8 @@ pub fn install(repo: &TrackedRepo, bundle: &PathBuf, settings: &Settings, job: &
     let before = if repo.app_id.is_empty() { flatpak::installed_apps() } else { Vec::new() };
     job.line(format!("Installing {} ({})…", bundle.file_name().unwrap_or_default().to_string_lossy(), settings.scope.flag()));
     let result = flatpak::install_bundle(bundle, settings.scope, job);
-    if !settings.keep_downloads {
+    // Keep the file after a failure, so the install can be retried by hand from a terminal.
+    if result.is_ok() && !settings.keep_downloads {
         let _ = std::fs::remove_file(bundle);
     }
     let log = result?;

@@ -14,6 +14,12 @@ case "$1" in
         printf '\nDemo\n\n     ID: io.github.o.Demo\n Version: %s\n' "$(cat "$FAKE_DIR/installed")";;
   install)
     f="${@: -1}"; [[ -f "$f" ]] || { echo "error: no file" >&2; exit 1; }
+    # Like real flatpak: a system-wide bundle install needs polkit, which --noninteractive forbids.
+    if [[ "$*" == *--system* && ( "$*" == *--noninteractive* || -f "$FAKE_DIR/deny" ) ]]; then
+      echo "Installing app/io.github.o.Demo/x86_64/master"
+      echo "Error: Failed to install bundle io.github.o.Demo: Flatpak system operation InstallBundle not allowed for user" >&2
+      exit 1
+    fi
     echo "Required runtime for io.github.o.Demo/x86_64/master (runtime/org.gnome.Platform/x86_64/49) found in remote flathub"
     n=$(cat "$FAKE_DIR/slow" 2>/dev/null || echo 0)
     for ((i=1; i<=n*2; i++)); do printf 'Installing 1/2… %d%%\r' $((i*50/n)); sleep 0.5; done

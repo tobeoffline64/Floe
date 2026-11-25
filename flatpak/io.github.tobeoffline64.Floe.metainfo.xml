@@ -20,6 +20,9 @@
   <developer id="io.github.tobeoffline64"><name>tobeoffline64</name></developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.4.1" date="2026-11-25">
+      <description><p>Fixes installing for all users (--system), which failed with "InstallBundle not allowed for user": Floe now lets flatpak ask for your administrator password.</p></description>
+    </release>
     <release version="0.4.0" date="2026-11-25">
       <description>
         <p>Beta channel per app: switch any app between stable releases and betas (GitHub pre-releases), see when a beta is available, and return to stable. Floe's own beta updates can be turned on in Settings.</p>

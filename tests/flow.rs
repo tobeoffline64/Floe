@@ -148,7 +148,22 @@ fn check_install_and_update() {
     assert_eq!((release.tag.as_str(), bundle.file_name().unwrap().to_str().unwrap()), ("v1.10.0", "demo.flatpak"));
     std::fs::write(dir.path().join("beta"), "").unwrap();
 
+    // System-wide installs: no --noninteractive, so polkit can ask for the password.
+    std::fs::write(dir.path().join("beta"), "").unwrap();
+    let system = Settings { scope: floe::flatpak::Scope::System, ..Settings::default() };
+    let (_, bundle) = updater::download(cfg3.repo(p).unwrap(), &Handle::detached()).unwrap();
+    updater::install(cfg3.repo(p).unwrap(), &bundle, &system, &Handle::detached()).unwrap();
+    // Password refused or no prompt: a clear message, and the file is kept for a manual retry.
+    std::fs::write(dir.path().join("deny"), "").unwrap();
+    let (_, bundle) = updater::download(cfg3.repo(p).unwrap(), &Handle::detached()).unwrap();
+    let err = updater::install(cfg3.repo(p).unwrap(), &bundle, &system, &Handle::detached()).unwrap_err();
+    assert!(err.contains("administrator password") && err.contains("flatpak install --system --reinstall"), "{err}");
+    assert!(bundle.is_file(), "bundle kept after a failed install");
+    std::fs::remove_file(dir.path().join("deny")).unwrap();
+
     let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
     assert!(calls.contains("gh release download v1.2.0 --repo o/demo --pattern demo.flatpak"), "{calls}");
     assert!(calls.contains("flatpak install --user -y --noninteractive --reinstall"), "{calls}");
+    assert!(calls.contains("flatpak install --system -y --reinstall"), "{calls}");
+    assert!(!calls.contains("--system -y --noninteractive"), "{calls}");
 }

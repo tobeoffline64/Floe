@@ -598,6 +598,7 @@ pub fn ConsolePanel(id: u64, busy: Option<Busy>) -> Element {
     });
     let Some(s) = snap() else { return rsx! {} };
     let scope = store.cfg.read().settings.scope;
+    let system_install = s.lines.iter().any(|l| l.starts_with("$ flatpak install --system"));
     let start = s.lines.len().saturating_sub(500);
     let shown = &s.lines[start..];
     let copy = {
@@ -641,7 +642,7 @@ pub fn ConsolePanel(id: u64, busy: Option<Busy>) -> Element {
             if s.running && s.quiet_secs >= 20 && busy == Some(Busy::Installing) {
                 p { class: "text-xs text-muted-foreground",
                     "No new output for {s.quiet_secs} s. The first install of an app also downloads its runtime (for example GNOME, several hundred MB) and flatpak prints little while it does. "
-                    if scope == Scope::System { "System-wide installs also wait for an admin password prompt; check for that window. " }
+                    if scope == Scope::System || system_install { "Installing for all users waits for your administrator password; look for a password window (it may be behind other windows). " }
                     "You can keep waiting or press Cancel." }
             } else if s.running && s.quiet_secs >= 30 && busy == Some(Busy::Downloading) && s.progress.is_none_or(|(d, _)| d == 0) {
                 p { class: "text-xs text-muted-foreground", "gh hasn't started writing the file after {s.quiet_secs} s. Check your network, or Cancel and try again." }
